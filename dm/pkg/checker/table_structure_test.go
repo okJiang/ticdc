@@ -55,9 +55,7 @@ func (t *testCheckSuite) TestShardingTablesChecker(c *tc.C) {
 
 	checker := NewShardingTablesChecker("test-name",
 		map[string]*sql.DB{"test-source": db},
-		map[string]map[string][]string{"test-source": {"test-db": []string{"test-table-1", "test-table-2"}}},
-		nil,
-		false)
+		map[string]map[string][]string{"test-source": {"test-db": []string{"test-table-1", "test-table-2"}}})
 	result := checker.Check(ctx)
 
 	c.Assert(result.State, tc.Equals, StateSuccess)

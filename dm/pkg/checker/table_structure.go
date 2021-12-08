@@ -21,11 +21,9 @@ import (
 	"strings"
 
 	"github.com/pingcap/errors"
-	column "github.com/pingcap/tidb-tools/pkg/column-mapping"
 	"github.com/pingcap/tidb-tools/pkg/dbutil"
 	"github.com/pingcap/tidb/parser/ast"
 	"github.com/pingcap/tidb/parser/charset"
-	"github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
 )
 
@@ -74,6 +72,7 @@ func NewTablesChecker(db *sql.DB, dbinfo *dbutil.DBConfig, tables map[string][]s
 
 // Check implements RealChecker interface.
 func (c *TablesChecker) Check(ctx context.Context) *Result {
+	// 如果遇到 errCnt 个错误或者 warnCnt 和 warning 的时候，立刻停止
 	r := &Result{
 		Name:  c.Name(),
 		Desc:  "check compatibility of table structure",
@@ -184,16 +183,16 @@ func (c *TablesChecker) checkAST(stmt ast.StmtNode) []*incompatibilityOption {
 	}
 
 	var options []*incompatibilityOption
-	// check columns
+	// check auto increment
 	for _, def := range st.Cols {
-		option := c.checkColumnDef(def)
+		option := hasAutoIncrement(def)
 		if option != nil {
 			options = append(options, option)
 		}
 	}
 	// check constrains
 	for _, cst := range st.Constraints {
-		option := c.checkConstraint(cst)
+		option := checkConstraint(cst)
 		if option != nil {
 			options = append(options, option)
 		}
@@ -201,7 +200,7 @@ func (c *TablesChecker) checkAST(stmt ast.StmtNode) []*incompatibilityOption {
 	// check primary/unique key
 	hasUnique := false
 	for _, cst := range st.Constraints {
-		if c.checkUnique(cst) {
+		if checkUnique(cst) {
 			hasUnique = true
 			break
 		}
@@ -216,7 +215,7 @@ func (c *TablesChecker) checkAST(stmt ast.StmtNode) []*incompatibilityOption {
 
 	// check options
 	for _, opt := range st.Options {
-		option := c.checkTableOption(opt)
+		option := checkTableOption(opt)
 		if option != nil {
 			options = append(options, option)
 		}
@@ -224,11 +223,11 @@ func (c *TablesChecker) checkAST(stmt ast.StmtNode) []*incompatibilityOption {
 	return options
 }
 
-func (c *TablesChecker) checkColumnDef(def *ast.ColumnDef) *incompatibilityOption {
+func checkColumnDef(def *ast.ColumnDef) *incompatibilityOption {
 	return nil
 }
 
-func (c *TablesChecker) checkConstraint(cst *ast.Constraint) *incompatibilityOption {
+func checkConstraint(cst *ast.Constraint) *incompatibilityOption {
 	if cst.Tp == ast.ConstraintForeignKey {
 		return &incompatibilityOption{
 			state:       StateWarning,
@@ -240,7 +239,7 @@ func (c *TablesChecker) checkConstraint(cst *ast.Constraint) *incompatibilityOpt
 	return nil
 }
 
-func (c *TablesChecker) checkUnique(cst *ast.Constraint) bool {
+func checkUnique(cst *ast.Constraint) bool {
 	switch cst.Tp {
 	case ast.ConstraintPrimaryKey, ast.ConstraintUniq, ast.ConstraintUniqKey, ast.ConstraintUniqIndex:
 		return true
@@ -248,7 +247,7 @@ func (c *TablesChecker) checkUnique(cst *ast.Constraint) bool {
 	return false
 }
 
-func (c *TablesChecker) checkTableOption(opt *ast.TableOption) *incompatibilityOption {
+func checkTableOption(opt *ast.TableOption) *incompatibilityOption {
 	if opt.Tp == ast.TableOptionCharset {
 		// Check charset
 		cs := strings.ToLower(opt.StrValue)
@@ -263,26 +262,34 @@ func (c *TablesChecker) checkTableOption(opt *ast.TableOption) *incompatibilityO
 	return nil
 }
 
+func hasAutoIncrement(col *ast.ColumnDef) *incompatibilityOption {
+	for _, opt := range col.Options {
+		if opt.Tp == ast.ColumnOptionAutoIncrement {
+			return &incompatibilityOption{
+				state:       StateWarning,
+				instruction: "TODO: method resolved UK/PK conflict",
+			}
+		}
+	}
+	return nil
+}
+
 // ShardingTablesChecker checks consistency of table structures of one sharding group
 // * check whether they have same column list
 // * check whether they have auto_increment key.
 type ShardingTablesChecker struct {
 	name string
 
-	dbs                          map[string]*sql.DB
-	tables                       map[string]map[string][]string // instance => {schema: [table1, table2, ...]}
-	mapping                      map[string]*column.Mapping
-	checkAutoIncrementPrimaryKey bool
+	dbs    map[string]*sql.DB
+	tables map[string]map[string][]string // instance => {schema: [table1, table2, ...]}
 }
 
 // NewShardingTablesChecker returns a RealChecker.
-func NewShardingTablesChecker(name string, dbs map[string]*sql.DB, tables map[string]map[string][]string, mapping map[string]*column.Mapping, checkAutoIncrementPrimaryKey bool) RealChecker {
+func NewShardingTablesChecker(name string, dbs map[string]*sql.DB, tables map[string]map[string][]string) RealChecker {
 	return &ShardingTablesChecker{
-		name:                         name,
-		dbs:                          dbs,
-		tables:                       tables,
-		mapping:                      mapping,
-		checkAutoIncrementPrimaryKey: checkAutoIncrementPrimaryKey,
+		name:   name,
+		dbs:    dbs,
+		tables: tables,
 	}
 }
 
@@ -328,12 +335,6 @@ func (c *ShardingTablesChecker) Check(ctx context.Context) *Result {
 					return r
 				}
 
-				info, err := dbutil.GetTableInfoBySQL(statement, parser2)
-				if err != nil {
-					markCheckError(r, err)
-					r.Extra = fmt.Sprintf("instance %s on sharding %s", instance, c.name)
-					return r
-				}
 				stmt, err := parser2.ParseOneStmt(statement, "", "")
 				if err != nil {
 					markCheckError(r, errors.Annotatef(err, "statement %s", statement))
@@ -346,13 +347,6 @@ func (c *ShardingTablesChecker) Check(ctx context.Context) *Result {
 					markCheckError(r, errors.Errorf("Expect CreateTableStmt but got %T", stmt))
 					r.Extra = fmt.Sprintf("instance %s on sharding %s", instance, c.name)
 					return r
-				}
-
-				if c.checkAutoIncrementPrimaryKey {
-					passed := c.checkAutoIncrementKey(instance, schema, table, ctStmt, info, r)
-					if !passed {
-						return r
-					}
 				}
 
 				if stmtNode == nil {
@@ -375,85 +369,6 @@ func (c *ShardingTablesChecker) Check(ctx context.Context) *Result {
 	}
 
 	return r
-}
-
-func (c *ShardingTablesChecker) checkAutoIncrementKey(instance, schema, table string, ctStmt *ast.CreateTableStmt, info *model.TableInfo, r *Result) bool {
-	autoIncrementKeys := c.findAutoIncrementKey(ctStmt, info)
-	for columnName, isBigInt := range autoIncrementKeys {
-		hasMatchedRule := false
-		if cm, ok1 := c.mapping[instance]; ok1 {
-			ruleSet := cm.Selector.Match(schema, table)
-			for _, rule := range ruleSet {
-				r, ok2 := rule.(*column.Rule)
-				if !ok2 {
-					continue
-				}
-
-				if r.Expression == column.PartitionID && r.TargetColumn == columnName {
-					hasMatchedRule = true
-					break
-				}
-			}
-
-			if hasMatchedRule && !isBigInt {
-				r.State = StateFailure
-				r.Errors = append(r.Errors, NewError("instance %s table `%s`.`%s` of sharding %s have auto-increment key %s and column mapping, but type of %s should be bigint", instance, schema, table, c.name, columnName, columnName))
-				r.Instruction = "please set auto-increment key type to bigint"
-				r.Extra = AutoIncrementKeyChecking
-				return false
-			}
-		}
-
-		if !hasMatchedRule {
-			r.State = StateFailure
-			r.Errors = append(r.Errors, NewError("instance %s table `%s`.`%s` of sharding %s have auto-increment key %s and column mapping, but type of %s should be bigint", instance, schema, table, c.name, columnName, columnName))
-			r.Instruction = "please handle it by yourself"
-			r.Extra = AutoIncrementKeyChecking
-			return false
-		}
-	}
-
-	return true
-}
-
-func (c *ShardingTablesChecker) findAutoIncrementKey(stmt *ast.CreateTableStmt, info *model.TableInfo) map[string]bool {
-	autoIncrementKeys := make(map[string]bool)
-	autoIncrementCols := make(map[string]bool)
-
-	for _, col := range stmt.Cols {
-		var (
-			hasAutoIncrementOpt bool
-			isUnique            bool
-		)
-		for _, opt := range col.Options {
-			switch opt.Tp {
-			case ast.ColumnOptionAutoIncrement:
-				hasAutoIncrementOpt = true
-			case ast.ColumnOptionPrimaryKey, ast.ColumnOptionUniqKey:
-				isUnique = true
-			}
-		}
-
-		if hasAutoIncrementOpt {
-			if isUnique {
-				autoIncrementKeys[col.Name.Name.O] = col.Tp.Tp == mysql.TypeLonglong
-			} else {
-				autoIncrementCols[col.Name.Name.O] = col.Tp.Tp == mysql.TypeLonglong
-			}
-		}
-	}
-
-	for _, index := range info.Indices {
-		if index.Unique || index.Primary {
-			if len(index.Columns) == 1 {
-				if isBigInt, ok := autoIncrementCols[index.Columns[0].Name.O]; ok {
-					autoIncrementKeys[index.Columns[0].Name.O] = isBigInt
-				}
-			}
-		}
-	}
-
-	return autoIncrementKeys
 }
 
 type briefColumnInfo struct {

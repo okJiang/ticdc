@@ -210,7 +210,7 @@ func (c *Checker) Init(ctx context.Context) (err error) {
 				continue
 			}
 
-			c.checkList = append(c.checkList, checker.NewShardingTablesChecker(name, dbs, shardingSet, columnMapping, checkingShardID))
+			c.checkList = append(c.checkList, checker.NewShardingTablesChecker(name, dbs, shardingSet))
 		}
 	}
 
