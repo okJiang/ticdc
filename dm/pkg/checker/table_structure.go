@@ -207,7 +207,7 @@ func (c *TablesChecker) checkAST(stmt ast.StmtNode) []*incompatibilityOption {
 	}
 	if !hasUnique {
 		options = append(options, &incompatibilityOption{
-			state:       StateFailure,
+			state:       StateWarning,
 			instruction: "please set primary/unique key for the table",
 			errMessage:  "primary/unique key does not exist",
 		})

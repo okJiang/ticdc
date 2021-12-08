@@ -74,6 +74,7 @@ func (pc *MySQLVersionChecker) checkVersion(value string, result *Result) {
 	needVersion := SupportedVersion["mysql"]
 	if IsMariaDB(value) {
 		needVersion = SupportedVersion["mariadb"]
+		result.State = StateWarning
 	}
 
 	version, err := toMySQLVersion(value)
