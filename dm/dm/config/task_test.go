@@ -541,18 +541,17 @@ func WordCount(s string) map[string]int {
 
 func (t *testConfig) TestGenAndFromSubTaskConfigs(c *C) {
 	var (
-		shardMode           = ShardOptimistic
-		onlineDDL           = true
-		name                = "from-sub-tasks"
-		taskMode            = "incremental"
-		ignoreCheckingItems = []string{VersionChecking, BinlogRowImageChecking}
-		source1             = "mysql-replica-01"
-		source2             = "mysql-replica-02"
-		metaSchema          = "meta-sub-tasks"
-		heartbeatUI         = 12
-		heartbeatRI         = 21
-		maxAllowedPacket    = 10244201
-		fromSession         = map[string]string{
+		shardMode        = ShardOptimistic
+		onlineDDL        = true
+		name             = "from-sub-tasks"
+		taskMode         = "incremental"
+		source1          = "mysql-replica-01"
+		source2          = "mysql-replica-02"
+		metaSchema       = "meta-sub-tasks"
+		heartbeatUI      = 12
+		heartbeatRI      = 21
+		maxAllowedPacket = 10244201
+		fromSession      = map[string]string{
 			"sql_mode":  " NO_AUTO_VALUE_ON_ZERO,ANSI_QUOTES",
 			"time_zone": "+00:00",
 		}
@@ -653,7 +652,6 @@ func (t *testConfig) TestGenAndFromSubTaskConfigs(c *C) {
 			CaseSensitive:           true,
 			Name:                    name,
 			Mode:                    taskMode,
-			IgnoreCheckingItems:     ignoreCheckingItems,
 			SourceID:                source1,
 			MetaSchema:              metaSchema,
 			HeartbeatUpdateInterval: heartbeatUI,
@@ -727,7 +725,6 @@ func (t *testConfig) TestGenAndFromSubTaskConfigs(c *C) {
 		TaskMode:                taskMode,
 		IsSharding:              stCfg1.IsSharding,
 		ShardMode:               shardMode,
-		IgnoreCheckingItems:     ignoreCheckingItems,
 		MetaSchema:              metaSchema,
 		EnableHeartbeat:         stCfg1.EnableHeartbeat,
 		HeartbeatUpdateInterval: heartbeatUI,

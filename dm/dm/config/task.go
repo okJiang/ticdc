@@ -439,10 +439,8 @@ func (c *TaskConfig) adjust() error {
 		c.ShardMode = ShardPessimistic // use the pessimistic mode as default for back compatible.
 	}
 
-	for _, item := range c.IgnoreCheckingItems {
-		if err := ValidateCheckingItem(item); err != nil {
-			return err
-		}
+	if len(c.IgnoreCheckingItems) != 0 {
+		log.L().Warn("'ignore-checking-items' will be deprecated soon. You can see pre-check details in [document](TODO).")
 	}
 
 	if c.OnlineDDLScheme != "" && c.OnlineDDLScheme != PT && c.OnlineDDLScheme != GHOST {

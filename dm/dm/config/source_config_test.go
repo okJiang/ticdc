@@ -21,6 +21,7 @@ import (
 	"path"
 	"reflect"
 	"strings"
+	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -33,6 +34,14 @@ import (
 
 // do not forget to update this path if the file removed/renamed.
 const sourceSampleFile = "../worker/source.yaml"
+
+func TestConfig(t *testing.T) {
+	TestingT(t)
+}
+
+type testConfig struct{}
+
+var _ = Suite(&testConfig{})
 
 func (t *testConfig) TestConfig(c *C) {
 	cfg, err := LoadFromFile(sourceSampleFile)
