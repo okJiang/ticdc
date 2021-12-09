@@ -23,5 +23,7 @@ INSERT INTO `dmctl`.`t_1` (`b`,`c`,`d`,`id`) VALUES (1649664004,'eIXDUjODpLjRkXu
 INSERT INTO `dmctl`.`t_1` (`b`,`c`,`d`,`id`) VALUES (1402446429,'xQMCGsfckXpoe','R',8);
 INSERT INTO `dmctl`.`t_1` (`b`,`c`,`d`,`id`) VALUES (800180420,'JuUIxUacksp','sX',9);
 
-create table tb_1(a INT, b INT);
+-- check auto_increment column
+create table tb_1(a INT auto_increment, b INT, primary key a(a));
+-- check table_structure inconsistent by that tb_1.b not same as tb_2.c
 create table tb_2(a INT, c INT);

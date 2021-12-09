@@ -78,17 +78,19 @@ type Checker struct {
 	errCnt  int64
 	warnCnt int64
 
-	mode string
+	mode       string
+	isSharding bool
 }
 
 // NewChecker returns a checker.
 func NewChecker(cfgs []*config.SubTaskConfig, errCnt, warnCnt int64) *Checker {
 	c := &Checker{
-		instances: make([]*mysqlInstance, 0, len(cfgs)),
-		logger:    log.With(zap.String("unit", "task check")),
-		errCnt:    errCnt,
-		warnCnt:   warnCnt,
-		mode:      cfgs[0].Mode,
+		instances:  make([]*mysqlInstance, 0, len(cfgs)),
+		logger:     log.With(zap.String("unit", "task check")),
+		errCnt:     errCnt,
+		warnCnt:    warnCnt,
+		mode:       cfgs[0].Mode,
+		isSharding: cfgs[0].IsSharding,
 	}
 
 	for _, cfg := range cfgs {
@@ -202,9 +204,12 @@ func (c *Checker) Init(ctx context.Context) (err error) {
 			c.checkList = append(c.checkList, checker.NewMySQLBinlogRowImageChecker(instance.sourceDB.DB, instance.sourceDBinfo))
 			c.checkList = append(c.checkList, checker.NewSourceReplicationPrivilegeChecker(instance.sourceDB.DB, instance.sourceDBinfo))
 		}
+		if c.isSharding {
+			c.checkList = append(c.checkList, checker.NewAutoIncrementChecker(instance.sourceDB.DB, instance.sourceDBinfo, checkTables))
+		}
 	}
 
-	if c.mode != config.ModeIncrement {
+	if c.isSharding && c.mode != config.ModeIncrement {
 		for name, shardingSet := range sharding {
 			if shardingCounter[name] <= 1 {
 				continue

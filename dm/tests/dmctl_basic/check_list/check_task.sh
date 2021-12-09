@@ -40,27 +40,35 @@ function check_task_error_count() {
 	run_dm_ctl $WORK_DIR "127.0.0.1:$MASTER_PORT" \
 		"check-task $cur/conf/dm-task3.yaml" \
 		"\"result\": false" 1 \
-		"\"failed\": 2" 1 \
-		"\"state\": \"fail\"" 2
+		"\"failed\": 1" 1 \
+		"\"warning\": 2" 1 \
+		"\"state\": \"fail\"" 1 \
+		"\"state\": \"warn\"" 2
 
 	# 1 error
 	run_dm_ctl $WORK_DIR "127.0.0.1:$MASTER_PORT" \
 		"check-task $cur/conf/dm-task3.yaml -e 1" \
 		"\"result\": false" 1 \
-		"\"failed\": 2" 1 \
-		"\"state\": \"fail\"" 1
+		"\"failed\": 1" 1 \
+		"\"warning\": 2" 1 \
+		"\"state\": \"fail\"" 1 \
+		"\"state\": \"warn\"" 2
 
 	# 100 errors
 	run_dm_ctl $WORK_DIR "127.0.0.1:$MASTER_PORT" \
 		"check-task $cur/conf/dm-task3.yaml -e 100 -w 1" \
 		"\"result\": false" 1 \
-		"\"failed\": 2" 1 \
-		"\"state\": \"fail\"" 2
+		"\"failed\": 1" 1 \
+		"\"warning\": 2" 1 \
+		"\"state\": \"fail\"" 1 \
+		"\"state\": \"warn\"" 1
 
 	# 0 error
 	run_dm_ctl $WORK_DIR "127.0.0.1:$MASTER_PORT" \
 		"check-task $cur/conf/dm-task3.yaml -e 0" \
 		"\"result\": false" 1 \
-		"\"failed\": 2" 1 \
-		"\"state\": \"fail\"" 0
+		"\"failed\": 1" 1 \
+		"\"warning\": 2" 1 \
+		"\"state\": \"fail\"" 0 \
+		"\"state\": \"warn\"" 2
 }

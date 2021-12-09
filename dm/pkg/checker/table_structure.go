@@ -72,7 +72,6 @@ func NewTablesChecker(db *sql.DB, dbinfo *dbutil.DBConfig, tables map[string][]s
 
 // Check implements RealChecker interface.
 func (c *TablesChecker) Check(ctx context.Context) *Result {
-	// 如果遇到 errCnt 个错误或者 warnCnt 和 warning 的时候，立刻停止
 	r := &Result{
 		Name:  c.Name(),
 		Desc:  "check compatibility of table structure",
@@ -81,9 +80,8 @@ func (c *TablesChecker) Check(ctx context.Context) *Result {
 	}
 
 	var (
-		err        error
-		options    = make(map[string][]*incompatibilityOption)
-		statements = make(map[string]string)
+		err     error
+		options = make(map[string][]*incompatibilityOption)
 	)
 	for schema, tables := range c.tables {
 		if len(tables) == 0 {
@@ -109,7 +107,6 @@ func (c *TablesChecker) Check(ctx context.Context) *Result {
 			opts := c.checkCreateSQL(ctx, statement)
 			if len(opts) > 0 {
 				options[tableName] = opts
-				statements[tableName] = statement
 			}
 		}
 	}
@@ -123,9 +120,7 @@ func (c *TablesChecker) Check(ctx context.Context) *Result {
 		for _, option := range opts {
 			switch option.state {
 			case StateWarning:
-				if len(r.State) == 0 {
-					r.State = StateWarning
-				}
+				r.State = StateWarning
 				e := NewError(tableMsg + option.errMessage)
 				e.Severity = StateWarning
 				e.Instruction = option.instruction
@@ -183,9 +178,9 @@ func (c *TablesChecker) checkAST(stmt ast.StmtNode) []*incompatibilityOption {
 	}
 
 	var options []*incompatibilityOption
-	// check auto increment
+	// check colum def
 	for _, def := range st.Cols {
-		option := hasAutoIncrement(def)
+		option := checkColumnDef(def)
 		if option != nil {
 			options = append(options, option)
 		}
@@ -256,18 +251,6 @@ func checkTableOption(opt *ast.TableOption) *incompatibilityOption {
 				state:       StateFailure,
 				instruction: "https://docs.pingcap.com/tidb/stable/mysql-compatibility#unsupported-features",
 				errMessage:  fmt.Sprintf("unsupport charset %s", opt.StrValue),
-			}
-		}
-	}
-	return nil
-}
-
-func hasAutoIncrement(col *ast.ColumnDef) *incompatibilityOption {
-	for _, opt := range col.Options {
-		if opt.Tp == ast.ColumnOptionAutoIncrement {
-			return &incompatibilityOption{
-				state:       StateWarning,
-				instruction: "TODO: method resolved UK/PK conflict",
 			}
 		}
 	}
@@ -458,4 +441,90 @@ func getBriefColumnList(stmt *ast.CreateTableStmt) briefColumnInfos {
 // Name implements Checker interface.
 func (c *ShardingTablesChecker) Name() string {
 	return fmt.Sprintf("sharding table %s consistency checking", c.name)
+}
+
+type AutoIncrementChecker struct {
+	db     *sql.DB
+	dbinfo *dbutil.DBConfig
+	tables map[string][]string // schema => []table; if []table is empty, query tables from db
+}
+
+// NewTablesChecker returns a RealChecker.
+func NewAutoIncrementChecker(db *sql.DB, dbinfo *dbutil.DBConfig, tables map[string][]string) RealChecker {
+	return &AutoIncrementChecker{
+		db:     db,
+		dbinfo: dbinfo,
+		tables: tables,
+	}
+}
+
+func (a *AutoIncrementChecker) Check(ctx context.Context) *Result {
+	r := &Result{
+		Name:  a.Name(),
+		Desc:  "check compatibility of table structure",
+		State: StateSuccess,
+		Extra: fmt.Sprintf("address of db instance - %s:%d", a.dbinfo.Host, a.dbinfo.Port),
+	}
+	var err error
+	for schema, tables := range a.tables {
+		if len(tables) == 0 {
+			tables, err = dbutil.GetTables(ctx, a.db, schema)
+			if err != nil {
+				markCheckError(r, err)
+				return r
+			}
+		}
+
+		for _, table := range tables {
+			statement, err := dbutil.GetCreateTableSQL(ctx, a.db, schema, table)
+			if err != nil {
+				// continue if table was deleted when checking
+				if isMySQLError(err, mysql.ErrNoSuchTable) {
+					continue
+				}
+				markCheckError(r, err)
+				return r
+			}
+
+			parser2, err := dbutil.GetParserForDB(ctx, a.db)
+			if err != nil {
+				markCheckError(r, err)
+				return r
+			}
+			stmt, err := parser2.ParseOneStmt(statement, "", "")
+			if err != nil {
+				markCheckError(r, err)
+				return r
+			}
+			if st, ok := stmt.(*ast.CreateTableStmt); !ok {
+				r.State = StateFailure
+				r.Instruction = fmt.Sprintf("Expect CreateTableStmt but got %T", stmt)
+				return r
+			} else {
+				for _, def := range st.Cols {
+					if hasAutoIncrement(def) {
+						r.State = StateWarning
+						r.Errors = append(r.Errors, &Error{
+							Severity:    StateWarning,
+							Instruction: "TODO: method resolved PK/UK conflicts",
+						})
+					}
+				}
+			}
+		}
+	}
+	return r
+}
+
+func (a *AutoIncrementChecker) Name() string {
+	return "check auto increment key."
+}
+
+func hasAutoIncrement(col *ast.ColumnDef) bool {
+	for _, opt := range col.Options {
+		if opt.Tp == ast.ColumnOptionAutoIncrement {
+			return true
+		}
+	}
+	return false
 }
