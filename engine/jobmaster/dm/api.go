@@ -32,6 +32,7 @@ type TaskStatus struct {
 	ExpectedStage  metadata.TaskStage         `json:"expected_stage"`
 	WorkerID       frameModel.WorkerID        `json:"worker_id"`
 	ConfigOutdated bool                       `json:"config_outdated"`
+	Duration       time.Duration              `json:"duration"`
 	Status         *dmpkg.QueryStatusResponse `json:"status"`
 }
 
@@ -86,6 +87,7 @@ func (jm *JobMaster) QueryJobStatus(ctx context.Context, tasks []string) (*JobSt
 				workerID        string
 				cfgModRevision  uint64
 				expectedStage   metadata.TaskStage
+				duration        time.Duration
 			)
 
 			// task not exist
@@ -100,6 +102,7 @@ func (jm *JobMaster) QueryJobStatus(ctx context.Context, tasks []string) (*JobSt
 				} else if workerStatus.Stage != runtime.WorkerFinished {
 					workerID = workerStatus.ID
 					cfgModRevision = workerStatus.CfgModRevision
+					duration = time.Since(workerStatus.CreatedTime)
 					queryStatusResp = jm.QueryStatus(ctx, taskID)
 				}
 			}
@@ -110,6 +113,7 @@ func (jm *JobMaster) QueryJobStatus(ctx context.Context, tasks []string) (*JobSt
 				WorkerID:       workerID,
 				Status:         queryStatusResp,
 				ConfigOutdated: cfgModRevision != expectedCfgModRevision,
+				Duration:       duration,
 			}
 			mu.Unlock()
 		}()

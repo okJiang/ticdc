@@ -120,8 +120,8 @@ type WorkerStatus struct {
 	Unit           framework.WorkerType
 	Stage          WorkerStage
 	CfgModRevision uint64
-	// only use when creating, change to updatedTime if needed.
-	createdTime time.Time
+
+	CreatedTime time.Time
 }
 
 // IsOffline checks whether worker stage is offline
@@ -136,7 +136,7 @@ func (w *WorkerStatus) IsTombStone() bool {
 
 // CreateFailed checks whether the worker creation is failed
 func (w *WorkerStatus) CreateFailed() bool {
-	return w.Stage == WorkerCreating && w.createdTime.Add(2*HeartbeatInterval).Before(time.Now())
+	return w.Stage == WorkerCreating && w.CreatedTime.Add(2*HeartbeatInterval).Before(time.Now())
 }
 
 // RunAsExpected returns whether a worker is running.
@@ -148,7 +148,7 @@ func (w *WorkerStatus) RunAsExpected() bool {
 // InitWorkerStatus creates a new worker status and initializes it
 func InitWorkerStatus(taskID string, unit framework.WorkerType, id frameModel.WorkerID) WorkerStatus {
 	workerStatus := NewWorkerStatus(taskID, unit, id, WorkerCreating, 0)
-	workerStatus.createdTime = time.Now()
+	workerStatus.CreatedTime = time.Now()
 	return workerStatus
 }
 
