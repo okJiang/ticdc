@@ -10,19 +10,19 @@ source $CUR/lib.sh
 function clean_data() {
 	echo "-------clean_data--------"
 
-	exec_sql $master_57_host "stop slave;"
-	exec_sql $slave_57_host "stop slave;"
+	exec_sql $master_8_2_host "stop slave;"
+	exec_sql $slave_8_2_host "stop slave;"
 	exec_sql $master_8_host "stop slave;"
 	exec_sql $slave_8_host "stop slave;"
 
-	exec_sql $master_57_host "drop database if exists db1;"
-	exec_sql $master_57_host "drop database if exists db2;"
-	exec_sql $master_57_host "drop database if exists ${db};"
-	exec_sql $master_57_host "reset master;"
-	exec_sql $slave_57_host "drop database if exists db1;"
-	exec_sql $slave_57_host "drop database if exists db2;"
-	exec_sql $slave_57_host "drop database if exists ${db};"
-	exec_sql $slave_57_host "reset master;"
+	exec_sql $master_8_2_host "drop database if exists db1;"
+	exec_sql $master_8_2_host "drop database if exists db2;"
+	exec_sql $master_8_2_host "drop database if exists ${db};"
+	exec_sql $master_8_2_host "reset master;"
+	exec_sql $slave_8_2_host "drop database if exists db1;"
+	exec_sql $slave_8_2_host "drop database if exists db2;"
+	exec_sql $slave_8_2_host "drop database if exists ${db};"
+	exec_sql $slave_8_2_host "reset master;"
 	exec_sql $master_8_host "drop database if exists db1;"
 	exec_sql $master_8_host "drop database if exists db2;"
 	exec_sql $master_8_host "drop database if exists ${db};"
@@ -48,8 +48,8 @@ function cleanup_process() {
 function prepare_binlogs() {
 	echo "-------prepare_binlogs--------"
 
-	prepare_more_binlogs $master_57_host
-	prepare_less_binlogs $slave_57_host
+	prepare_more_binlogs $master_8_2_host
+	prepare_less_binlogs $slave_8_2_host
 	prepare_less_binlogs $master_8_host
 	prepare_more_binlogs $slave_8_host
 }
@@ -57,17 +57,17 @@ function prepare_binlogs() {
 function setup_replica() {
 	echo "-------setup_replica--------"
 
-	master_57_status=($(get_master_status $master_57_host))
-	slave_57_status=($(get_master_status $slave_57_host))
+	master_8_2_status=($(get_master_status $master_8_2_host))
+	slave_8_2_status=($(get_master_status $slave_8_2_host))
 	master_8_status=($(get_master_status $master_8_host))
 	slave_8_status=($(get_master_status $slave_8_host))
-	echo "master_57_status" ${master_57_status[@]}
-	echo "slave_57_status" ${slave_57_status[@]}
+	echo "master_8_2_status" ${master_8_2_status[@]}
+	echo "slave_8_2_status" ${slave_8_2_status[@]}
 	echo "master_8_status" ${master_8_status[@]}
 	echo "slave_8_status" ${slave_8_status[@]}
 
 	# master <-- slave
-	change_master_to_pos $slave_57_host $master_57_host ${master_57_status[0]} ${master_57_status[1]}
+	change_master_to_pos $slave_8_2_host $master_8_2_host ${master_8_2_status[0]} ${master_8_2_status[1]}
 
 	# master <--> master
 	change_master_to_gtid $slave_8_host $master_8_host
@@ -142,7 +142,7 @@ function gen_incr_data() {
 	done
 
 	# make master slave switch
-	docker-compose -f $CUR/docker-compose.yml pause mysql57_master
+	docker-compose -f $CUR/docker-compose.yml pause mysql8_2_master
 	docker-compose -f $CUR/docker-compose.yml pause mysql8_master
 	wait_mysql $host1 2
 	wait_mysql $host2 2
@@ -218,7 +218,7 @@ function test_relay() {
 	gen_incr_data
 	verify_result
 	clean_task
-	docker-compose -f $CUR/docker-compose.yml unpause mysql57_master
+	docker-compose -f $CUR/docker-compose.yml unpause mysql8_2_master
 	echo "CASE=test_relay success"
 }
 

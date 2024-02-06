@@ -14,30 +14,30 @@ x-node: &default-node
     MYSQL_ROOT_PASSWORD: "123456"
 
 services:
-  mysql57_master:
+  mysql8_2_master:
     <<: *default-node
     build:
       context: .
       args:
-        conf: mysql57_master
-        version: 5.7
+        conf: mysql8_2_master
+        version: 8
     command: --default-authentication-plugin=mysql_native_password --log-bin=/var/lib/mysql/mysql-bin --log_slave_updates=ON --server-id=1 --binlog-format=ROW --gtid_mode=ON --enforce-gtid-consistency=true
-    container_name: mysql57_master
-    hostname: mysql57_master
+    container_name: mysql8_2_master
+    hostname: mysql8_2_master
     networks:
       db-networks:
         ipv4_address: 172.28.128.4
 
-  mysql57_slave:
+  mysql8_2_slave:
     <<: *default-node
     build:
       context: .
       args:
-        conf: mysql57_slave
-        version: 5.7
+        conf: mysql8_2_slave
+        version: 8
     command: --default-authentication-plugin=mysql_native_password --log-bin=/var/lib/mysql/mysql-bin --log_slave_updates=ON --server-id=2 --binlog-format=ROW --gtid_mode=ON --enforce-gtid-consistency=true
-    container_name: mysql57_slave
-    hostname: mysql57_slave
+    container_name: mysql8_2_slave
+    hostname: mysql8_2_slave
     networks:
       db-networks:
         ipv4_address: 172.28.128.5
