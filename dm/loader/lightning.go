@@ -335,6 +335,7 @@ func GetLightningConfig(globalCfg *lcfg.GlobalConfig, subtaskCfg *config.SubTask
 	cfg.App.RegionConcurrency = subtaskCfg.LoaderConfig.PoolSize
 	cfg.Routes = subtaskCfg.RouteRules
 
+	log.L().Info("get lightning config", zap.Any("global config", globalCfg), zap.Any("subtask config", subtaskCfg))
 	// Use MySQL checkpoint when we use s3/gcs as dumper storage
 	if subtaskCfg.ExtStorage != nil || !storage.IsLocalDiskPath(subtaskCfg.LoaderConfig.Dir) {
 		// NOTE: If we use bucket as dumper storage, write lightning checkpoint to downstream DB to avoid bucket ratelimit
@@ -417,6 +418,8 @@ func GetLightningConfig(globalCfg *lcfg.GlobalConfig, subtaskCfg *config.SubTask
 		"foreign_key_checks": "0",
 	}
 	cfg.Mydumper.SourceID = subtaskCfg.SourceID
+
+	log.L().Info("get lightning config", zap.Any("global config", globalCfg), zap.Any("subtask config", subtaskCfg))
 	return cfg, nil
 }
 
