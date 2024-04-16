@@ -118,13 +118,13 @@ type MasterMeta struct {
 	Epoch     Epoch            `json:"epoch" gorm:"column:epoch;type:bigint not null"`
 
 	// Config holds business-specific data
-	Config []byte `json:"config" gorm:"column:config;type:blob"`
+	Config []byte `json:"config" gorm:"column:config;type:longblob"`
 
 	// error message for the job
 	ErrorMsg string `json:"error-message" gorm:"column:error_message;type:text"`
 
 	// if job is finished or canceled, business logic can set self-defined job info to `Detail`
-	Detail []byte `json:"detail" gorm:"column:detail;type:blob"`
+	Detail []byte `json:"detail" gorm:"column:detail;type:longblob"`
 
 	Ext MasterMetaExt `json:"ext" gorm:"column:ext;type:JSON"`
 
