@@ -16,10 +16,9 @@ package filter
 import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
-	"github.com/pingcap/tidb/parser"
-	tfilter "github.com/pingcap/tidb/util/table-filter"
+	tfilter "github.com/pingcap/tidb/pkg/util/table-filter"
 	"github.com/pingcap/tiflow/cdc/model"
+	bf "github.com/pingcap/tiflow/pkg/binlog-filter"
 	"github.com/pingcap/tiflow/pkg/config"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"go.uber.org/zap"
@@ -80,8 +79,8 @@ func newSQLEventFilterRule(cfg *config.EventFilterRule) (*sqlEventRule, error) {
 }
 
 func verifyIgnoreEvents(types []bf.EventType) error {
-	typesMap := make(map[bf.EventType]struct{}, len(supportedEventTypes))
-	for _, et := range supportedEventTypes {
+	typesMap := make(map[bf.EventType]struct{}, len(SupportedEventTypes()))
+	for _, et := range SupportedEventTypes() {
 		typesMap[et] = struct{}{}
 	}
 	for _, et := range types {
@@ -94,14 +93,11 @@ func verifyIgnoreEvents(types []bf.EventType) error {
 
 // sqlEventFilter is a filter that filters DDL/DML event by its type or query.
 type sqlEventFilter struct {
-	p     *parser.Parser
 	rules []*sqlEventRule
 }
 
 func newSQLEventFilter(cfg *config.FilterConfig) (*sqlEventFilter, error) {
-	res := &sqlEventFilter{
-		p: parser.New(),
-	}
+	res := &sqlEventFilter{}
 	for _, rule := range cfg.EventFilters {
 		if err := res.addRule(rule); err != nil {
 			return nil, errors.Trace(err)
@@ -136,11 +132,13 @@ func (f *sqlEventFilter) getRules(schema, table string) []*sqlEventRule {
 }
 
 // skipDDLEvent skips ddl event by its type and query.
-func (f *sqlEventFilter) shouldSkipDDL(ddl *model.DDLEvent) (bool, error) {
-	evenType, err := ddlToEventType(f.p, ddl.Query, ddl.Type)
-	if err != nil {
-		return false, err
+func (f *sqlEventFilter) shouldSkipDDL(ddl *model.DDLEvent) (skip bool, err error) {
+	if len(f.rules) == 0 {
+		return false, nil
 	}
+	schema := ddl.TableInfo.TableName.Schema
+	table := ddl.TableInfo.TableName.Table
+	evenType := ddlToEventType(ddl.Type)
 	if evenType == bf.NullEvent {
 		log.Warn("sql event filter unsupported ddl type, do nothing",
 			zap.String("type", ddl.Type.String()),
@@ -148,14 +146,32 @@ func (f *sqlEventFilter) shouldSkipDDL(ddl *model.DDLEvent) (bool, error) {
 		return false, nil
 	}
 
-	rules := f.getRules(ddl.TableInfo.TableName.Schema, ddl.TableInfo.TableName.Table)
+	rules := f.getRules(schema, table)
 	for _, rule := range rules {
-		action, err := rule.bf.Filter(binlogFilterSchemaPlaceholder, binlogFilterTablePlaceholder, evenType, ddl.Query)
+		action, err := rule.bf.Filter(
+			binlogFilterSchemaPlaceholder,
+			binlogFilterTablePlaceholder,
+			evenType, ddl.Query)
 		if err != nil {
 			return false, errors.Trace(err)
 		}
 		if action == bf.Ignore {
 			return true, nil
+		}
+
+		// If the ddl is alter table's subtype,
+		// we need try to filter it by bf.AlterTable.
+		if isAlterTable(ddl.Type) {
+			action, err = rule.bf.Filter(
+				binlogFilterSchemaPlaceholder,
+				binlogFilterTablePlaceholder,
+				bf.AlterTable, ddl.Query)
+			if err != nil {
+				return false, errors.Trace(err)
+			}
+			if action == bf.Ignore {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -163,6 +179,10 @@ func (f *sqlEventFilter) shouldSkipDDL(ddl *model.DDLEvent) (bool, error) {
 
 // shouldSkipDML skips dml event by its type.
 func (f *sqlEventFilter) shouldSkipDML(event *model.RowChangedEvent) (bool, error) {
+	if len(f.rules) == 0 {
+		return false, nil
+	}
+
 	var et bf.EventType
 	switch {
 	case event.IsInsert():
@@ -176,7 +196,7 @@ func (f *sqlEventFilter) shouldSkipDML(event *model.RowChangedEvent) (bool, erro
 		log.Warn("unknown row changed event type")
 		return false, nil
 	}
-	rules := f.getRules(event.Table.Schema, event.Table.Table)
+	rules := f.getRules(event.TableInfo.GetSchemaName(), event.TableInfo.GetTableName())
 	for _, rule := range rules {
 		action, err := rule.bf.Filter(binlogFilterSchemaPlaceholder, binlogFilterTablePlaceholder, et, dmlQuery)
 		if err != nil {
@@ -187,30 +207,4 @@ func (f *sqlEventFilter) shouldSkipDML(event *model.RowChangedEvent) (bool, erro
 		}
 	}
 	return false, nil
-}
-
-var supportedEventTypes = []bf.EventType{
-	bf.AllDML,
-	bf.AllDDL,
-
-	// dml events
-	bf.InsertEvent,
-	bf.UpdateEvent,
-	bf.DeleteEvent,
-
-	// ddl events
-	bf.CreateSchema,
-	bf.CreateDatabase,
-	bf.DropSchema,
-	bf.DropDatabase,
-	bf.CreateTable,
-	bf.DropTable,
-	bf.RenameTable,
-	bf.TruncateTable,
-	bf.AlterTable,
-	bf.CreateView,
-	bf.DropView,
-	bf.AddTablePartition,
-	bf.DropTablePartition,
-	bf.TruncateTablePartition,
 }

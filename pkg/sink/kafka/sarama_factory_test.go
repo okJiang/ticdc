@@ -17,7 +17,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Shopify/sarama"
+	"github.com/IBM/sarama"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/stretchr/testify/require"
 )
@@ -54,6 +54,7 @@ func TestSyncProducer(t *testing.T) {
 
 	o := NewOptions()
 	o.Version = "0.9.0.0"
+	o.IsAssignedVersion = true
 	o.BrokerEndpoints = []string{leader.Addr()}
 	o.ClientID = "sarama-test"
 
@@ -83,6 +84,7 @@ func TestAsyncProducer(t *testing.T) {
 
 	o := NewOptions()
 	o.Version = "0.9.0.0"
+	o.IsAssignedVersion = true
 	o.BrokerEndpoints = []string{leader.Addr()}
 	o.ClientID = "sarama-test"
 
@@ -90,7 +92,7 @@ func TestAsyncProducer(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	async, err := f.AsyncProducer(ctx, make(chan struct{}, 1), make(chan error, 1))
+	async, err := f.AsyncProducer(ctx, make(chan error, 1))
 	require.NoError(t, err)
 	require.NotNil(t, async)
 	async.Close()

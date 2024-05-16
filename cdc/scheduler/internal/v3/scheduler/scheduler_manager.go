@@ -55,7 +55,7 @@ func NewSchedulerManager(
 	sm.schedulers[schedulerPriorityDrainCapture] = newDrainCaptureScheduler(
 		cfg.MaxTaskConcurrency, changefeedID)
 	sm.schedulers[schedulerPriorityBalance] = newBalanceScheduler(
-		time.Duration(cfg.CheckBalanceInterval), cfg.MaxTaskConcurrency)
+		time.Duration(cfg.CheckBalanceInterval), cfg.MaxTaskConcurrency, sm.changefeedID)
 	sm.schedulers[schedulerPriorityMoveTable] = newMoveTableScheduler(changefeedID)
 	sm.schedulers[schedulerPriorityRebalance] = newRebalanceScheduler(changefeedID)
 
@@ -88,12 +88,6 @@ func (sm *Manager) Schedule(
 			sm.tasksCounter[name]++
 		}
 		if len(tasks) != 0 {
-			log.Info("schedulerv3: new schedule task",
-				zap.String("namespace", sm.changefeedID.Namespace),
-				zap.String("changefeed", sm.changefeedID.ID),
-				zap.Int("taskNumber", len(tasks)),
-				zap.Any("task", tasks),
-				zap.String("scheduler", scheduler.Name()))
 			return tasks
 		}
 	}

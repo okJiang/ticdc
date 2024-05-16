@@ -15,6 +15,7 @@ package owner
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -22,14 +23,14 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/log"
-	"github.com/pingcap/tidb/parser"
-	"github.com/pingcap/tidb/parser/format"
-	"github.com/pingcap/tiflow/cdc/contextutil"
+	"github.com/pingcap/tidb/pkg/parser"
+	"github.com/pingcap/tidb/pkg/parser/format"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sink/ddlsink"
 	"github.com/pingcap/tiflow/cdc/sink/ddlsink/factory"
 	"github.com/pingcap/tiflow/cdc/syncpointstore"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/pingcap/tiflow/pkg/retry"
 	"github.com/pingcap/tiflow/pkg/util"
 	"go.uber.org/zap"
 )
@@ -84,6 +85,7 @@ type ddlSinkImpl struct {
 	changefeedID model.ChangeFeedID
 	info         *model.ChangeFeedInfo
 
+	sinkRetry     *retry.ErrorRetry
 	reportError   func(err error)
 	reportWarning func(err error)
 }
@@ -101,6 +103,7 @@ func newDDLSink(
 		changefeedID: changefeedID,
 		info:         info,
 
+		sinkRetry:     retry.NewInfiniteErrorRetry(),
 		reportError:   reportError,
 		reportWarning: reportWarning,
 	}
@@ -110,26 +113,25 @@ func newDDLSink(
 type ddlSinkInitHandler func(ctx context.Context, a *ddlSinkImpl) error
 
 func ddlSinkInitializer(ctx context.Context, a *ddlSinkImpl) error {
-	ctx = contextutil.PutRoleInCtx(ctx, util.RoleOwner)
 	log.Info("Try to create ddlSink based on sink",
 		zap.String("namespace", a.changefeedID.Namespace),
 		zap.String("changefeed", a.changefeedID.ID))
-	s, err := factory.New(ctx, a.info.SinkURI, a.info.Config)
+	s, err := factory.New(ctx, a.changefeedID, a.info.SinkURI, a.info.Config)
 	if err != nil {
 		return errors.Trace(err)
 	}
 	a.sink = s
 
-	if !a.info.Config.EnableSyncPoint {
+	if !util.GetOrZero(a.info.Config.EnableSyncPoint) {
 		return nil
 	}
 	return nil
 }
 
 func (s *ddlSinkImpl) makeSyncPointStoreReady(ctx context.Context) error {
-	if s.info.Config.EnableSyncPoint && s.syncPointStore == nil {
+	if util.GetOrZero(s.info.Config.EnableSyncPoint) && s.syncPointStore == nil {
 		syncPointStore, err := syncpointstore.NewSyncPointStore(
-			ctx, s.changefeedID, s.info.SinkURI, s.info.Config.SyncPointRetention)
+			ctx, s.changefeedID, s.info.SinkURI, util.GetOrZero(s.info.Config.SyncPointRetention))
 		if err != nil {
 			return errors.Trace(err)
 		}
@@ -159,22 +161,52 @@ func (s *ddlSinkImpl) makeSinkReady(ctx context.Context) error {
 }
 
 // retry the given action with 5s interval. Before every retry, s.sink will be re-initialized.
-func (s *ddlSinkImpl) retrySinkActionWithErrorReport(ctx context.Context, action func() error) (err error) {
+func (s *ddlSinkImpl) retrySinkAction(ctx context.Context, name string, action func() error) (err error) {
 	for {
 		if err = action(); err == nil {
 			return nil
 		}
+		isRetryable := !cerror.ShouldFailChangefeed(err) && errors.Cause(err) != context.Canceled
+		log.Warn("owner ddl sink fails on action",
+			zap.String("namespace", s.changefeedID.Namespace),
+			zap.String("changefeed", s.changefeedID.ID),
+			zap.String("action", name),
+			zap.Bool("retryable", isRetryable),
+			zap.Error(err))
+
 		s.sink = nil
-		if !cerror.IsChangefeedUnRetryableError(err) && errors.Cause(err) != context.Canceled {
+		if isRetryable {
 			s.reportWarning(err)
 		} else {
 			s.reportError(err)
 			return err
 		}
 
-		// Use a 5 second backoff when re-establishing internal resources.
-		if err = util.Hang(ctx, 5*time.Second); err != nil {
+		backoff, err := s.sinkRetry.GetRetryBackoff(err)
+		if err != nil {
+			return errors.New(fmt.Sprintf("GetRetryBackoff: %s", err.Error()))
+		}
+
+		if err = util.Hang(ctx, backoff); err != nil {
 			return errors.Trace(err)
+		}
+	}
+}
+
+func (s *ddlSinkImpl) observedRetrySinkAction(ctx context.Context, name string, action func() error) (err error) {
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.retrySinkAction(ctx, name, action) }()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-errCh:
+			return err
+		case <-ticker.C:
+			log.Info("owner ddl sink performs an action too long",
+				zap.String("namespace", s.changefeedID.Namespace),
+				zap.String("changefeed", s.changefeedID.ID),
+				zap.String("action", name))
 		}
 	}
 }
@@ -200,7 +232,7 @@ func (s *ddlSinkImpl) writeCheckpointTs(ctx context.Context, lastCheckpointTs *m
 		return
 	}
 
-	return s.retrySinkActionWithErrorReport(ctx, doWrite)
+	return s.observedRetrySinkAction(ctx, "writeCheckpointTs", doWrite)
 }
 
 func (s *ddlSinkImpl) writeDDLEvent(ctx context.Context, ddl *model.DDLEvent) error {
@@ -231,7 +263,8 @@ func (s *ddlSinkImpl) writeDDLEvent(ctx context.Context, ddl *model.DDLEvent) er
 		}
 		return
 	}
-	return s.retrySinkActionWithErrorReport(ctx, doWrite)
+
+	return s.observedRetrySinkAction(ctx, "writeDDLEvent", doWrite)
 }
 
 func (s *ddlSinkImpl) run(ctx context.Context) {
@@ -239,19 +272,29 @@ func (s *ddlSinkImpl) run(ctx context.Context) {
 
 	s.wg.Add(1)
 	go func() {
-		defer s.wg.Done()
+		var err error
+		log.Info("owner ddl sink background loop is started",
+			zap.String("namespace", s.changefeedID.Namespace),
+			zap.String("changefeed", s.changefeedID.ID))
+		defer func() {
+			s.wg.Done()
+			log.Info("owner ddl sink background loop exits",
+				zap.String("namespace", s.changefeedID.Namespace),
+				zap.String("changefeed", s.changefeedID.ID),
+				zap.Error(err))
+		}()
 
 		// TODO make the tick duration configurable
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		var lastCheckpointTs model.Ts
-		var err error
 		for {
 			// `ticker.C` and `ddlCh` may can be triggered at the same time, it
 			// does not matter which one emit first, since TiCDC allow DDL with
 			// CommitTs equal to the last CheckpointTs be emitted later.
 			select {
 			case <-ctx.Done():
+				err = ctx.Err()
 				return
 			case <-ticker.C:
 				if err = s.writeCheckpointTs(ctx, &lastCheckpointTs); err != nil {
@@ -354,7 +397,7 @@ func (s *ddlSinkImpl) emitSyncPoint(ctx context.Context, checkpointTs uint64) (e
 		if err == nil {
 			return nil
 		}
-		if !cerror.IsChangefeedUnRetryableError(err) && errors.Cause(err) != context.Canceled {
+		if !cerror.ShouldFailChangefeed(err) && errors.Cause(err) != context.Canceled {
 			// TODO(qupeng): retry it internally after async sink syncPoint is ready.
 			s.reportError(err)
 			return err
@@ -383,15 +426,23 @@ func (s *ddlSinkImpl) close(ctx context.Context) (err error) {
 
 // addSpecialComment translate tidb feature to comment
 func (s *ddlSinkImpl) addSpecialComment(ddl *model.DDLEvent) (string, error) {
-	stms, _, err := parser.New().Parse(ddl.Query, ddl.Charset, ddl.Collate)
+	p := parser.New()
+	// We need to use the correct SQL mode to parse the DDL query.
+	// Otherwise, the parser may fail to parse the DDL query.
+	// For example, it is needed to parse the following DDL query:
+	//  `alter table "t" add column "c" int default 1;`
+	// by adding `ANSI_QUOTES` to the SQL mode.
+	p.SetSQLMode(ddl.SQLMode)
+	stms, _, err := p.Parse(ddl.Query, ddl.Charset, ddl.Collate)
 	if err != nil {
 		return "", errors.Trace(err)
 	}
 	if len(stms) != 1 {
-		log.Panic("invalid ddlQuery statement size",
+		log.Error("invalid ddlQuery statement size",
 			zap.String("namespace", s.changefeedID.Namespace),
 			zap.String("changefeed", s.changefeedID.ID),
 			zap.String("ddlQuery", ddl.Query))
+		return "", cerror.ErrUnexpected.FastGenByArgs("invalid ddlQuery statement size")
 	}
 	var sb strings.Builder
 	// translate TiDB feature to special comment

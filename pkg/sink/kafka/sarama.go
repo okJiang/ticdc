@@ -16,10 +16,11 @@ package kafka
 import (
 	"context"
 	"crypto/tls"
+	"math/rand"
 	"strings"
 	"time"
 
-	"github.com/Shopify/sarama"
+	"github.com/IBM/sarama"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
@@ -27,32 +28,30 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	defaultKafkaVersion = sarama.V2_0_0_0
+	maxKafkaVersion     = sarama.V2_8_0_0
+)
+
 // NewSaramaConfig return the default config and set the according version and metrics
 func NewSaramaConfig(ctx context.Context, o *Options) (*sarama.Config, error) {
 	config := sarama.NewConfig()
 	config.ClientID = o.ClientID
-
-	version, err := sarama.ParseKafkaVersion(o.Version)
-	if err != nil {
-		return nil, cerror.WrapError(cerror.ErrKafkaInvalidVersion, err)
-	}
-	config.Version = version
-
-	// Producer fetch metadata from brokers frequently, if metadata cannot be
-	// refreshed easily, this would indicate the network condition between the
+	var err error
+	// Admin client would refresh metadata periodically,
+	// if metadata cannot be refreshed easily, this would indicate the network condition between the
 	// capture server and kafka broker is not good.
-	// In the scenario that cannot get response from Kafka server, this default
-	// setting can help to get response more quickly.
-	config.Metadata.Retry.Max = 1
-	config.Metadata.Retry.Backoff = 100 * time.Millisecond
-	// This Timeout is useless if the `RefreshMetadata` time cost is less than it.
-	config.Metadata.Timeout = 1 * time.Minute
+	// Set the timeout to 2 minutes to ensure that the underlying client does not retry for too long.
+	// If retrying to obtain the metadata fails, simply return the error and let sinkManager rebuild the sink.
+	config.Metadata.Retry.Max = 10
+	config.Metadata.Retry.Backoff = 200 * time.Millisecond
+	config.Metadata.Timeout = 2 * time.Minute
 
-	// Admin.Retry take effect on `ClusterAdmin` related operations,
-	// only `CreateTopic` for cdc now. set the `Timeout` to `1m` to make CI stable.
-	config.Admin.Retry.Max = 5
-	config.Admin.Retry.Backoff = 100 * time.Millisecond
-	config.Admin.Timeout = 1 * time.Minute
+	config.Admin.Retry.Max = 10
+	config.Admin.Retry.Backoff = 200 * time.Millisecond
+	// This timeout control the request timeout for each admin request.
+	// set it as the read timeout.
+	config.Admin.Timeout = 10 * time.Second
 
 	// Producer.Retry take effect when the producer try to send message to kafka
 	// brokers. If kafka cluster is healthy, just the default value should be enough.
@@ -123,7 +122,28 @@ func NewSaramaConfig(ctx context.Context, o *Options) (*sarama.Config, error) {
 		return nil, cerror.WrapError(cerror.ErrKafkaInvalidConfig, err)
 	}
 
-	return config, err
+	kafkaVersion, err := getKafkaVersion(config, o)
+	if err != nil {
+		log.Warn("Can't get Kafka version by broker. ticdc will use default version",
+			zap.String("defaultVersion", kafkaVersion.String()))
+	}
+	config.Version = kafkaVersion
+
+	if o.IsAssignedVersion {
+		version, err := sarama.ParseKafkaVersion(o.Version)
+		if err != nil {
+			return nil, cerror.WrapError(cerror.ErrKafkaInvalidVersion, err)
+		}
+		config.Version = version
+		if !version.IsAtLeast(maxKafkaVersion) && version.String() != kafkaVersion.String() {
+			log.Warn("The Kafka version you assigned may not be correct. "+
+				"Please assign a version equal to or less than the specified version",
+				zap.String("assignedVersion", version.String()),
+				zap.String("desiredVersion", kafkaVersion.String()))
+		}
+	}
+
+	return config, nil
 }
 
 func completeSaramaSASLConfig(ctx context.Context, config *sarama.Config, o *Options) error {
@@ -167,4 +187,70 @@ func completeSaramaSASLConfig(ctx context.Context, config *sarama.Config, o *Opt
 	}
 
 	return nil
+}
+
+func getKafkaVersion(config *sarama.Config, o *Options) (sarama.KafkaVersion, error) {
+	var err error
+	version := defaultKafkaVersion
+	addrs := o.BrokerEndpoints
+	if len(addrs) > 1 {
+		// Shuffle the list of addresses to randomize the order in which
+		// connections are attempted. This prevents routing all connections
+		// to the first broker (which will usually succeed).
+		rand.Shuffle(len(addrs), func(i, j int) {
+			addrs[i], addrs[j] = addrs[j], addrs[i]
+		})
+	}
+	for i := range addrs {
+		version, err := getKafkaVersionFromBroker(config, addrs[i])
+		if err == nil {
+			return version, err
+		}
+	}
+	return version, err
+}
+
+func getKafkaVersionFromBroker(config *sarama.Config, addr string) (sarama.KafkaVersion, error) {
+	KafkaVersion := defaultKafkaVersion
+	broker := sarama.NewBroker(addr)
+	err := broker.Open(config)
+	defer func() {
+		broker.Close()
+	}()
+	if err != nil {
+		log.Warn("Kafka fail to open broker", zap.String("addr", addr))
+		return KafkaVersion, err
+	}
+	apiResponse, err := broker.ApiVersions(&sarama.ApiVersionsRequest{Version: 3})
+	if err != nil {
+		log.Warn("Kafka fail to get ApiVersions", zap.String("addr", addr))
+		return KafkaVersion, err
+	}
+	// ApiKey method
+	// 0      Produce
+	// 3      Metadata (default)
+	version := apiResponse.ApiKeys[3].MaxVersion
+	switch version {
+	case 10:
+		KafkaVersion = sarama.V2_8_0_0
+	case 9:
+		KafkaVersion = sarama.V2_4_0_0
+	case 8:
+		KafkaVersion = sarama.V2_3_0_0
+	case 7:
+		KafkaVersion = sarama.V2_1_0_0
+	case 6:
+		KafkaVersion = sarama.V2_0_0_0
+	case 5:
+		KafkaVersion = sarama.V1_0_0_0
+	case 3, 4:
+		KafkaVersion = sarama.V0_11_0_0
+	case 2:
+		KafkaVersion = sarama.V0_10_1_0
+	case 1:
+		KafkaVersion = sarama.V0_10_0_0
+	case 0:
+		KafkaVersion = sarama.V0_8_2_0
+	}
+	return KafkaVersion, nil
 }

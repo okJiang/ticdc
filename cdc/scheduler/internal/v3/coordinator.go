@@ -22,6 +22,7 @@ import (
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/processor/tablepb"
+	"github.com/pingcap/tiflow/cdc/redo"
 	"github.com/pingcap/tiflow/cdc/scheduler/internal"
 	"github.com/pingcap/tiflow/cdc/scheduler/internal/v3/compat"
 	"github.com/pingcap/tiflow/cdc/scheduler/internal/v3/keyspan"
@@ -31,7 +32,6 @@ import (
 	"github.com/pingcap/tiflow/cdc/scheduler/internal/v3/transport"
 	"github.com/pingcap/tiflow/cdc/scheduler/schedulepb"
 	"github.com/pingcap/tiflow/pkg/config"
-	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/p2p"
 	"github.com/pingcap/tiflow/pkg/pdutil"
 	"github.com/pingcap/tiflow/pkg/spanz"
@@ -41,6 +41,10 @@ import (
 )
 
 const (
+	// When heavy operations (such as network IO and serialization) take too much time, the program
+	// should print a warning log, and if necessary, the timeout should be exposed externally through
+	// monitor.
+	tickLogsWarnDuration    = 1 * time.Second
 	checkpointCannotProceed = internal.CheckpointCannotProceed
 	metricsInterval         = 10 * time.Second
 )
@@ -64,6 +68,7 @@ type coordinator struct {
 	compat          *compat.Compat
 	pdClock         pdutil.Clock
 	tableRanges     replication.TableRanges
+	redoMetaManager redo.MetaManager
 
 	lastCollectTime time.Time
 	changefeedID    model.ChangeFeedID
@@ -80,42 +85,34 @@ func NewCoordinator(
 	changefeedEpoch uint64,
 	up *upstream.Upstream,
 	cfg *config.SchedulerConfig,
+	redoMetaManager redo.MetaManager,
 ) (internal.Scheduler, error) {
 	trans, err := transport.NewTransport(
 		ctx, changefeedID, transport.SchedulerRole, messageServer, messageRouter)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	coord := newCoordinator(captureID, changefeedID, ownerRevision, cfg)
-	coord.trans = trans
-	coord.pdClock = up.PDClock
-	coord.changefeedEpoch = changefeedEpoch
-	coord.reconciler, err = keyspan.NewReconciler(changefeedID, up, cfg.ChangefeedSettings)
+	reconciler, err := keyspan.NewReconciler(changefeedID, up, cfg.ChangefeedSettings)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
-	return coord, nil
-}
-
-func newCoordinator(
-	captureID model.CaptureID,
-	changefeedID model.ChangeFeedID,
-	ownerRevision int64,
-	cfg *config.SchedulerConfig,
-) *coordinator {
 	revision := schedulepb.OwnerRevision{Revision: ownerRevision}
-
 	return &coordinator{
-		version:   version.ReleaseSemver(),
-		revision:  revision,
-		captureID: captureID,
+		version:         version.ReleaseSemver(),
+		revision:        revision,
+		changefeedEpoch: changefeedEpoch,
+		captureID:       captureID,
+		trans:           trans,
 		replicationM: replication.NewReplicationManager(
 			cfg.MaxTaskConcurrency, changefeedID),
-		captureM:     member.NewCaptureManager(captureID, changefeedID, revision, cfg),
-		schedulerM:   scheduler.NewSchedulerManager(changefeedID, cfg),
-		changefeedID: changefeedID,
-		compat:       compat.New(cfg, map[model.CaptureID]*model.CaptureInfo{}),
-	}
+		captureM:        member.NewCaptureManager(captureID, changefeedID, revision, cfg),
+		schedulerM:      scheduler.NewSchedulerManager(changefeedID, cfg),
+		reconciler:      reconciler,
+		changefeedID:    changefeedID,
+		compat:          compat.New(cfg, map[model.CaptureID]*model.CaptureInfo{}),
+		pdClock:         up.PDClock,
+		redoMetaManager: redoMetaManager,
+	}, nil
 }
 
 // Tick implement the scheduler interface
@@ -127,8 +124,19 @@ func (c *coordinator) Tick(
 	currentTables []model.TableID,
 	// All captures that are alive according to the latest Etcd states.
 	aliveCaptures map[model.CaptureID]*model.CaptureInfo,
-	barrier *schedulepb.Barrier,
-) (newCheckpointTs, newResolvedTs model.Ts, err error) {
+	barrier *schedulepb.BarrierWithMinTs,
+) (watermark schedulepb.Watermark, err error) {
+	startTime := time.Now()
+	defer func() {
+		costTime := time.Since(startTime)
+		if costTime > tickLogsWarnDuration {
+			log.Warn("scheduler tick took too long",
+				zap.String("namespace", c.changefeedID.Namespace),
+				zap.String("changefeed", c.changefeedID.ID),
+				zap.Duration("duration", costTime))
+		}
+	}()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -180,12 +188,11 @@ func (c *coordinator) DrainCapture(target model.CaptureID) (int, error) {
 	if !c.captureM.CheckAllCaptureInitialized() {
 		log.Info("schedulerv3: drain capture request ignored, "+
 			"since not all captures initialized",
-			zap.String("target", target),
 			zap.String("namespace", c.changefeedID.Namespace),
-			zap.String("changefeed", c.changefeedID.ID))
-		// return false to let client retry.
-		return 0, cerror.ErrSchedulerRequestFailed.
-			GenWithStack("not all captures initialized")
+			zap.String("changefeed", c.changefeedID.ID),
+			zap.String("target", target))
+		// return count 1 to let client retry.
+		return 1, nil
 	}
 
 	var count int
@@ -206,8 +213,8 @@ func (c *coordinator) DrainCapture(target model.CaptureID) (int, error) {
 		return count, nil
 	}
 
-	// when draining the capture, tables need to be dispatched to other
-	// capture except the draining one, so at least should have 2 captures alive.
+	// when draining the capture, tables need to be dispatched to other capture
+	// except the draining one, so there should be at least two live captures.
 	if len(c.captureM.Captures) <= 1 {
 		log.Warn("schedulerv3: drain capture request ignored, "+
 			"only one captures alive",
@@ -251,59 +258,75 @@ func (c *coordinator) Close(ctx context.Context) {
 	c.schedulerM.CleanMetrics()
 
 	log.Info("schedulerv3: coordinator closed",
-		zap.Any("ownerRev", c.captureM.OwnerRev),
 		zap.String("namespace", c.changefeedID.Namespace),
-		zap.String("changefeed", c.changefeedID.ID))
+		zap.String("changefeed", c.changefeedID.ID),
+		zap.Any("ownerRev", c.captureM.OwnerRev))
 }
 
 // ===========
 
 func (c *coordinator) poll(
-	ctx context.Context, checkpointTs model.Ts, currentTables []model.TableID,
-	aliveCaptures map[model.CaptureID]*model.CaptureInfo, barrier *schedulepb.Barrier,
-) (newCheckpointTs, newResolvedTs model.Ts, err error) {
+	ctx context.Context,
+	checkpointTs model.Ts,
+	currentTables []model.TableID,
+	aliveCaptures map[model.CaptureID]*model.CaptureInfo,
+	barrier *schedulepb.BarrierWithMinTs,
+) (watermark schedulepb.Watermark, err error) {
 	c.maybeCollectMetrics()
 	if c.compat.UpdateCaptureInfo(aliveCaptures) {
+		spanReplicationEnabled := c.compat.CheckSpanReplicationEnabled()
 		log.Info("schedulerv3: compat update capture info",
+			zap.String("namespace", c.changefeedID.Namespace),
+			zap.String("changefeed", c.changefeedID.ID),
 			zap.Any("captures", aliveCaptures),
-			zap.Bool("spanReplicationEnabled", c.compat.CheckSpanReplicationEnabled()))
+			zap.Bool("spanReplicationEnabled", spanReplicationEnabled))
 	}
 
 	recvMsgs, err := c.recvMsgs(ctx)
 	if err != nil {
-		return checkpointCannotProceed, checkpointCannotProceed, errors.Trace(err)
+		return schedulepb.Watermark{
+			CheckpointTs:     checkpointCannotProceed,
+			ResolvedTs:       checkpointCannotProceed,
+			LastSyncedTs:     checkpointCannotProceed,
+			PullerResolvedTs: checkpointCannotProceed,
+		}, errors.Trace(err)
 	}
 
 	var msgBuf []*schedulepb.Message
 	c.captureM.HandleMessage(recvMsgs)
-	msgs := c.captureM.Tick(c.replicationM.ReplicationSets(),
-		c.schedulerM.DrainingTarget(), barrier)
-	msgBuf = append(msgBuf, msgs...)
-	msgs = c.captureM.HandleAliveCaptureUpdate(aliveCaptures)
+
+	msgs := c.captureM.HandleAliveCaptureUpdate(aliveCaptures)
 	msgBuf = append(msgBuf, msgs...)
 
 	// Handle received messages to advance replication set.
 	msgs, err = c.replicationM.HandleMessage(recvMsgs)
 	if err != nil {
-		return checkpointCannotProceed, checkpointCannotProceed, errors.Trace(err)
+		return schedulepb.Watermark{
+			CheckpointTs:     checkpointCannotProceed,
+			ResolvedTs:       checkpointCannotProceed,
+			LastSyncedTs:     checkpointCannotProceed,
+			PullerResolvedTs: checkpointCannotProceed,
+		}, errors.Trace(err)
 	}
 	msgBuf = append(msgBuf, msgs...)
 
 	pdTime := time.Now()
 	// only nil in unit test
 	if c.pdClock != nil {
-		pdTime, err = c.pdClock.CurrentTime()
-		if err != nil {
-			log.Warn("schedulerv3: failed to get pd time", zap.Error(err))
-		}
+		pdTime = c.pdClock.CurrentTime()
 	}
 
 	c.tableRanges.UpdateTables(currentTables)
 	if !c.captureM.CheckAllCaptureInitialized() {
 		// Skip generating schedule tasks for replication manager,
 		// as not all capture are initialized.
-		newCheckpointTs, newResolvedTs = c.replicationM.AdvanceCheckpoint(&c.tableRanges, pdTime)
-		return newCheckpointTs, newResolvedTs, c.sendMsgs(ctx, msgBuf)
+		watermark = c.replicationM.AdvanceCheckpoint(&c.tableRanges, pdTime, barrier, c.redoMetaManager)
+		// tick capture manager after checkpoint calculation to take account resolvedTs in barrier
+		// when redo is enabled
+		msgs = c.captureM.Tick(c.replicationM.ReplicationSets(),
+			c.schedulerM.DrainingTarget(), barrier.Barrier)
+		msgBuf = append(msgBuf, msgs...)
+		return watermark, c.sendMsgs(ctx, msgBuf)
 	}
 
 	// Handle capture membership changes.
@@ -311,7 +334,12 @@ func (c *coordinator) poll(
 		msgs, err = c.replicationM.HandleCaptureChanges(
 			changes.Init, changes.Removed, checkpointTs)
 		if err != nil {
-			return checkpointCannotProceed, checkpointCannotProceed, errors.Trace(err)
+			return schedulepb.Watermark{
+				CheckpointTs:     checkpointCannotProceed,
+				ResolvedTs:       checkpointCannotProceed,
+				LastSyncedTs:     checkpointCannotProceed,
+				PullerResolvedTs: checkpointCannotProceed,
+			}, errors.Trace(err)
 		}
 		msgBuf = append(msgBuf, msgs...)
 	}
@@ -327,19 +355,36 @@ func (c *coordinator) poll(
 	// Handle generated schedule tasks.
 	msgs, err = c.replicationM.HandleTasks(allTasks)
 	if err != nil {
-		return checkpointCannotProceed, checkpointCannotProceed, errors.Trace(err)
+		return schedulepb.Watermark{
+			CheckpointTs:     checkpointCannotProceed,
+			ResolvedTs:       checkpointCannotProceed,
+			LastSyncedTs:     checkpointCannotProceed,
+			PullerResolvedTs: checkpointCannotProceed,
+		}, errors.Trace(err)
 	}
+	msgBuf = append(msgBuf, msgs...)
+
+	// Checkpoint calculation
+	watermark = c.replicationM.AdvanceCheckpoint(&c.tableRanges, pdTime, barrier, c.redoMetaManager)
+
+	// tick capture manager after checkpoint calculation to take account resolvedTs in barrier
+	// when redo is enabled
+	msgs = c.captureM.Tick(c.replicationM.ReplicationSets(),
+		c.schedulerM.DrainingTarget(), barrier.Barrier)
 	msgBuf = append(msgBuf, msgs...)
 
 	// Send new messages.
 	err = c.sendMsgs(ctx, msgBuf)
 	if err != nil {
-		return checkpointCannotProceed, checkpointCannotProceed, errors.Trace(err)
+		return schedulepb.Watermark{
+			CheckpointTs:     checkpointCannotProceed,
+			ResolvedTs:       checkpointCannotProceed,
+			LastSyncedTs:     checkpointCannotProceed,
+			PullerResolvedTs: checkpointCannotProceed,
+		}, errors.Trace(err)
 	}
 
-	// Checkpoint calculation
-	newCheckpointTs, newResolvedTs = c.replicationM.AdvanceCheckpoint(&c.tableRanges, pdTime)
-	return newCheckpointTs, newResolvedTs, nil
+	return watermark, nil
 }
 
 func (c *coordinator) recvMsgs(ctx context.Context) ([]*schedulepb.Message, error) {

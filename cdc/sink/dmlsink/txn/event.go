@@ -16,10 +16,11 @@ package txn
 import (
 	"encoding/binary"
 	"hash/fnv"
-	"sort"
+	"strings"
 	"time"
 
 	"github.com/pingcap/log"
+	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sink/dmlsink"
 	"go.uber.org/zap"
@@ -40,17 +41,16 @@ func (e *txnEvent) OnConflictResolved() {
 }
 
 // ConflictKeys implements causality.txnEvent interface.
-func (e *txnEvent) ConflictKeys(numSlots uint64) []uint64 {
-	keys := genTxnKeys(e.TxnCallbackableEvent.Event)
-	sort.Slice(keys, func(i, j int) bool { return keys[i]%numSlots < keys[j]%numSlots })
-	return keys
+func (e *txnEvent) ConflictKeys() []uint64 {
+	return genTxnKeys(e.TxnCallbackableEvent.Event)
 }
 
-// genTxnKeys returns hash keys for `txn`.
+// genTxnKeys returns deduplicated hash keys of a transaction.
 func genTxnKeys(txn *model.SingleTableTxn) []uint64 {
 	if len(txn.Rows) == 0 {
 		return nil
 	}
+
 	hashRes := make(map[uint64]struct{}, len(txn.Rows))
 	hasher := fnv.New32a()
 	for _, row := range txn.Rows {
@@ -72,8 +72,8 @@ func genTxnKeys(txn *model.SingleTableTxn) []uint64 {
 func genRowKeys(row *model.RowChangedEvent) [][]byte {
 	var keys [][]byte
 	if len(row.Columns) != 0 {
-		for iIdx, idxCol := range row.IndexColumns {
-			key := genKeyList(row.Columns, iIdx, idxCol, row.Table.TableID)
+		for iIdx, idxCol := range row.TableInfo.IndexColumnsOffset {
+			key := genKeyList(row.GetColumns(), iIdx, idxCol, row.PhysicalTableID)
 			if len(key) == 0 {
 				continue
 			}
@@ -81,8 +81,8 @@ func genRowKeys(row *model.RowChangedEvent) [][]byte {
 		}
 	}
 	if len(row.PreColumns) != 0 {
-		for iIdx, idxCol := range row.IndexColumns {
-			key := genKeyList(row.PreColumns, iIdx, idxCol, row.Table.TableID)
+		for iIdx, idxCol := range row.TableInfo.IndexColumnsOffset {
+			key := genKeyList(row.GetPreColumns(), iIdx, idxCol, row.PhysicalTableID)
 			if len(key) == 0 {
 				continue
 			}
@@ -92,24 +92,32 @@ func genRowKeys(row *model.RowChangedEvent) [][]byte {
 	if len(keys) == 0 {
 		// use table ID as key if no key generated (no PK/UK),
 		// no concurrence for rows in the same table.
-		log.Debug("Use table id as the key", zap.Int64("tableID", row.Table.TableID))
+		log.Debug("Use table id as the key", zap.Int64("tableID", row.PhysicalTableID))
 		tableKey := make([]byte, 8)
-		binary.BigEndian.PutUint64(tableKey, uint64(row.Table.TableID))
+		binary.BigEndian.PutUint64(tableKey, uint64(row.PhysicalTableID))
 		keys = [][]byte{tableKey}
 	}
 	return keys
 }
 
-func genKeyList(columns []*model.Column, iIdx int, colIdx []int, tableID int64) []byte {
+func genKeyList(
+	columns []*model.Column, iIdx int, colIdx []int, tableID int64,
+) []byte {
 	var key []byte
 	for _, i := range colIdx {
 		// if a column value is null, we can ignore this index
 		// If the index contain generated column, we can't use this key to detect conflict with other DML,
-		// Because such as insert can't specified the generated value.
+		// Because such as insert can't specify the generated value.
 		if columns[i] == nil || columns[i].Value == nil || columns[i].Flag.IsGeneratedColumn() {
 			return nil
 		}
-		key = append(key, []byte(model.ColumnValueString(columns[i].Value))...)
+
+		val := model.ColumnValueString(columns[i].Value)
+		if columnNeeds2LowerCase(columns[i].Type, columns[i].Collation) {
+			val = strings.ToLower(val)
+		}
+
+		key = append(key, []byte(val)...)
 		key = append(key, 0)
 	}
 	if len(key) == 0 {
@@ -120,4 +128,17 @@ func genKeyList(columns []*model.Column, iIdx int, colIdx []int, tableID int64) 
 	binary.BigEndian.PutUint64(tableKey[8:], uint64(tableID))
 	key = append(key, tableKey...)
 	return key
+}
+
+func columnNeeds2LowerCase(mysqlType byte, collation string) bool {
+	switch mysqlType {
+	case mysql.TypeVarchar, mysql.TypeString, mysql.TypeVarString, mysql.TypeTinyBlob,
+		mysql.TypeMediumBlob, mysql.TypeBlob, mysql.TypeLongBlob:
+		return collationNeeds2LowerCase(collation)
+	}
+	return false
+}
+
+func collationNeeds2LowerCase(collation string) bool {
+	return strings.HasSuffix(collation, "_ci")
 }

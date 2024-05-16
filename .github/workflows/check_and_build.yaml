@@ -5,10 +5,21 @@ on:
     branches:
       - master
       - "release-[0-9].[0-9]*"
+    paths-ignore:
+      - '**/*.md'
+      - '**/OWNERS'
+      - 'OWNERS'
+      - 'OWNERS_ALIASES'
+
   pull_request:
     branches:
       - master
       - "release-[0-9].[0-9]*"
+    paths-ignore:
+      - '**/*.md'
+      - '**/OWNERS'
+      - 'OWNERS'
+      - 'OWNERS_ALIASES'
 
 # See: https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#concurrency.
 concurrency:
@@ -42,7 +53,7 @@ jobs:
       - name: Setup Go environment
         uses: actions/setup-go@v3
         with:
-          go-version: '1.20'
+          go-version: '1.21'
 
       - name: Cache Tools
         id: cache-tools
@@ -53,6 +64,9 @@ jobs:
 
       - name: Build
         run: make build
+
+      - name: Check
+        run: make check
 
   arm_build:
     runs-on: [ARM64]
@@ -68,7 +82,7 @@ jobs:
       - name: Setup Go environment
         uses: actions/setup-go@v3
         with:
-          go-version: '1.20'
+          go-version: '1.21'
 
       - name: Build
         run: make build

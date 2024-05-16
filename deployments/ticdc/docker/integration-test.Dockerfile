@@ -29,7 +29,7 @@ RUN ./download-integration-test-binaries.sh $BRANCH $COMMUNITY $VERSION $OS $ARC
 RUN ls ./bin
 
 # Download go into /usr/local dir.
-ENV GOLANG_VERSION 1.20
+ENV GOLANG_VERSION 1.21.0
 ENV GOLANG_DOWNLOAD_URL https://dl.google.com/go/go$GOLANG_VERSION.linux-amd64.tar.gz
 RUN curl -fsSL "$GOLANG_DOWNLOAD_URL" -o golang.tar.gz \
 	&& tar -C /usr/local -xzf golang.tar.gz \
@@ -63,6 +63,11 @@ RUN rpm -ivh https://repo.mysql.com/mysql57-community-release-el7-11.noarch.rpm
 # See: https://support.cpanel.net/hc/en-us/articles/4419382481815?input_string=gpg+keys+problem+with+mysql+5.7
 RUN rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2022
 RUN yum install mysql-community-client.x86_64 -y
+
+# install java to run the schema regsitry for the avro case.
+RUN yum install -y \
+    java-1.8.0-openjdk \
+    java-1.8.0-openjdk-devel
 
 # Copy go form downloader.
 COPY --from=downloader /usr/local/go /usr/local/go

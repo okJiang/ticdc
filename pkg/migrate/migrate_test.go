@@ -25,13 +25,13 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
-	filter "github.com/pingcap/tidb/util/table-filter"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/pkg/config"
 	"github.com/pingcap/tiflow/pkg/etcd"
 	"github.com/pingcap/tiflow/pkg/pdutil"
 	"github.com/pingcap/tiflow/pkg/security"
 	"github.com/pingcap/tiflow/pkg/txnutil/gc"
+	"github.com/pingcap/tiflow/pkg/util"
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/oracle"
 	pd "github.com/tikv/pd/client"
@@ -40,7 +40,7 @@ import (
 
 const cycylicChangefeedInfo = `{"upstream-id":0,"sink-uri":"blackhole://","opts":{"a":"b"},
 "create-time":"0001-01-01T00:00:00Z","start-ts":1,"target-ts":2,"admin-job-type":0,"sort-engine":
-"memory","sort-dir":"/tmp/","config":{"case-sensitive":true,"enable-old-value":true,
+"memory","sort-dir":"/tmp/","config":{"case-sensitive":true,
 "force-replicate":false,"check-gc-safe-point":true,"filter":{"rules":["*.*"],
 "ignore-txn-start-ts":null},"mounter":{"worker-num":16},"sink":{"dispatchers":null,"protocol":"",
 "column-selectors":null,"schema-registry":""},"cyclic-replication":{"enable":true,"replica-id":0,
@@ -77,14 +77,13 @@ func TestMigration(t *testing.T) {
 		SinkURI: "test1",
 		StartTs: 1, TargetTs: 100, State: model.StateNormal,
 	}
-	status1 := model.ChangeFeedStatus{ResolvedTs: 2, CheckpointTs: 1}
+	status1 := model.ChangeFeedStatus{CheckpointTs: 1}
 	info2 := model.ChangeFeedInfo{
 		SinkURI: "test1",
-		StartTs: 2, TargetTs: 200, State: model.StateError,
+		StartTs: 2, TargetTs: 200, State: model.StateWarning,
 	}
-	status2 := model.ChangeFeedStatus{ResolvedTs: 3, CheckpointTs: 2}
+	status2 := model.ChangeFeedStatus{CheckpointTs: 2}
 	cfg := config.GetDefaultReplicaConfig()
-	cfg.EnableOldValue = false
 	cfg.CheckGCSafePoint = false
 	cfg.Sink = &config.SinkConfig{
 		DispatchRules: []*config.DispatchRule{
@@ -95,15 +94,15 @@ func TestMigration(t *testing.T) {
 				TopicRule:      "topic",
 			},
 		},
-		Protocol: "aaa",
+		Protocol: util.AddressOf("aaa"),
 		ColumnSelectors: []*config.ColumnSelector{
 			{
 				Matcher: []string{"a", "b", "c"},
 				Columns: []string{"a", "b"},
 			},
 		},
-		SchemaRegistry: "bbb",
-		TxnAtomicity:   "aa",
+		SchemaRegistry: util.AddressOf("bbb"),
+		TxnAtomicity:   util.AddressOf(config.AtomicityLevel("aa")),
 	}
 	cfg.Consistent = &config.ConsistentConfig{
 		Level:             "1",
@@ -112,21 +111,7 @@ func TestMigration(t *testing.T) {
 		Storage:           "s3",
 	}
 	cfg.Filter = &config.FilterConfig{
-		Rules: []string{"a", "b", "c"},
-		MySQLReplicationRules: &filter.MySQLReplicationRules{
-			DoTables: []*filter.Table{{
-				Schema: "testdo",
-				Name:   "testgotable",
-			}},
-			DoDBs: []string{"ad", "bdo"},
-			IgnoreTables: []*filter.Table{
-				{
-					Schema: "testignore",
-					Name:   "testaaaingore",
-				},
-			},
-			IgnoreDBs: []string{"aa", "b2"},
-		},
+		Rules:            []string{"a", "b", "c"},
 		IgnoreTxnStartTs: []uint64{1, 2, 3},
 	}
 	info3 := model.ChangeFeedInfo{
@@ -134,7 +119,7 @@ func TestMigration(t *testing.T) {
 		StartTs: 3, TargetTs: 300, State: model.StateFailed,
 		Config: cfg,
 	}
-	status3 := model.ChangeFeedStatus{ResolvedTs: 4, CheckpointTs: 3}
+	status3 := model.ChangeFeedStatus{CheckpointTs: 3}
 
 	testCases := []struct {
 		id     string
@@ -356,17 +341,17 @@ func TestMigrationNonDefaultCluster(t *testing.T) {
 		SinkURI: "test1",
 		StartTs: 1, TargetTs: 100, State: model.StateNormal,
 	}
-	status1 := model.ChangeFeedStatus{ResolvedTs: 2, CheckpointTs: 1}
+	status1 := model.ChangeFeedStatus{CheckpointTs: 1}
 	info2 := model.ChangeFeedInfo{
 		SinkURI: "test1",
-		StartTs: 2, TargetTs: 200, State: model.StateError,
+		StartTs: 2, TargetTs: 200, State: model.StateWarning,
 	}
-	status2 := model.ChangeFeedStatus{ResolvedTs: 3, CheckpointTs: 2}
+	status2 := model.ChangeFeedStatus{CheckpointTs: 2}
 	info3 := model.ChangeFeedInfo{
 		SinkURI: "test1",
 		StartTs: 3, TargetTs: 300, State: model.StateFailed,
 	}
-	status3 := model.ChangeFeedStatus{ResolvedTs: 4, CheckpointTs: 3}
+	status3 := model.ChangeFeedStatus{CheckpointTs: 3}
 
 	testCases := []struct {
 		id     string
@@ -472,7 +457,7 @@ type mockPDClient struct {
 	check func(serviceID string, ttl int64, safePoint uint64) (uint64, error)
 }
 
-func (m *mockPDClient) GetLeaderAddr() string {
+func (m *mockPDClient) GetLeaderURL() string {
 	return m.url
 }
 

@@ -17,6 +17,7 @@ import (
 	"context"
 
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/redo"
 	"github.com/pingcap/tiflow/cdc/scheduler/internal"
 	v3 "github.com/pingcap/tiflow/cdc/scheduler/internal/v3"
 	v3agent "github.com/pingcap/tiflow/cdc/scheduler/internal/v3/agent"
@@ -66,7 +67,7 @@ func NewAgent(
 	liveness *model.Liveness,
 	messageServer *p2p.MessageServer,
 	messageRouter p2p.MessageRouter,
-	etcdClient etcd.CDCEtcdClient,
+	ownerInfoClient etcd.OwnerCaptureInfoClient,
 	executor TableExecutor,
 	changefeedID model.ChangeFeedID,
 	changefeedEpoch uint64,
@@ -74,7 +75,7 @@ func NewAgent(
 ) (Agent, error) {
 	return v3agent.NewAgent(
 		ctx, captureID, liveness, changefeedID,
-		messageServer, messageRouter, etcdClient, executor, changefeedEpoch, cfg)
+		messageServer, messageRouter, ownerInfoClient, executor, changefeedEpoch, cfg)
 }
 
 // NewScheduler returns two-phase scheduler.
@@ -88,10 +89,11 @@ func NewScheduler(
 	changefeedEpoch uint64,
 	up *upstream.Upstream,
 	cfg *config.SchedulerConfig,
+	redoMetaManager redo.MetaManager,
 ) (Scheduler, error) {
 	return v3.NewCoordinator(
 		ctx, captureID, changeFeedID, messageServer, messageRouter, ownerRevision,
-		changefeedEpoch, up, cfg)
+		changefeedEpoch, up, cfg, redoMetaManager)
 }
 
 // InitMetrics registers all metrics used in scheduler

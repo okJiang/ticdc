@@ -28,7 +28,6 @@ import (
 	"github.com/imdario/mergo"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-	"github.com/pingcap/tiflow/cdc/contextutil"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/pkg/config"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
@@ -39,6 +38,13 @@ import (
 const (
 	// defaultPartitionNum specifies the default number of partitions when we create the topic.
 	defaultPartitionNum = 3
+
+	// the `max-message-bytes` is set equal to topic's `max.message.bytes`, and is used to check
+	// whether the message is larger than the max size limit. It's found some message pass the message
+	// size limit check at the client side and failed at the broker side since message enlarged during
+	// the network transmission. so we set the `max-message-bytes` to a smaller value to avoid this problem.
+	// maxMessageBytesOverhead is used to reduce the `max-message-bytes`.
+	maxMessageBytesOverhead = 128
 )
 
 const (
@@ -144,6 +150,7 @@ type Options struct {
 	// User should make sure that `replication-factor` not greater than the number of kafka brokers.
 	ReplicationFactor int16
 	Version           string
+	IsAssignedVersion bool
 	MaxMessageBytes   int
 	Compression       string
 	ClientID          string
@@ -213,7 +220,7 @@ func (o *Options) SetPartitionNum(realPartitionCount int32) error {
 }
 
 // Apply the sinkURI to update Options
-func (o *Options) Apply(ctx context.Context,
+func (o *Options) Apply(changefeedID model.ChangeFeedID,
 	sinkURI *url.URL, replicaConfig *config.ReplicaConfig,
 ) error {
 	o.BrokerEndpoints = strings.Split(sinkURI.Host, ",")
@@ -240,6 +247,7 @@ func (o *Options) Apply(ctx context.Context,
 
 	if urlParameter.KafkaVersion != nil {
 		o.Version = *urlParameter.KafkaVersion
+		o.IsAssignedVersion = true
 	}
 
 	if urlParameter.MaxMessageBytes != nil {
@@ -255,8 +263,8 @@ func (o *Options) Apply(ctx context.Context,
 		kafkaClientID = *urlParameter.KafkaClientID
 	}
 	clientID, err := NewKafkaClientID(
-		contextutil.CaptureAddrFromCtx(ctx),
-		contextutil.ChangefeedIDFromCtx(ctx),
+		config.GetGlobalServerConfig().AdvertiseAddr,
+		changefeedID,
 		kafkaClientID)
 	if err != nil {
 		return err
@@ -564,7 +572,7 @@ func AdjustOptions(
 	options *Options,
 	topic string,
 ) error {
-	topics, err := admin.GetAllTopicsMeta(ctx)
+	topics, err := admin.GetTopicsMeta(ctx, []string{topic}, true)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -585,7 +593,7 @@ func AdjustOptions(
 	if exists {
 		// make sure that producer's `MaxMessageBytes` smaller than topic's `max.message.bytes`
 		topicMaxMessageBytesStr, err := getTopicConfig(
-			ctx, admin, info,
+			ctx, admin, info.Name,
 			TopicMaxMessageBytesConfigName,
 			BrokerMessageMaxBytesConfigName,
 		)
@@ -597,12 +605,18 @@ func AdjustOptions(
 			return errors.Trace(err)
 		}
 
-		if topicMaxMessageBytes < options.MaxMessageBytes {
+		maxMessageBytes := topicMaxMessageBytes - maxMessageBytesOverhead
+		if topicMaxMessageBytes <= options.MaxMessageBytes {
 			log.Warn("topic's `max.message.bytes` less than the `max-message-bytes`,"+
 				"use topic's `max.message.bytes` to initialize the Kafka producer",
 				zap.Int("max.message.bytes", topicMaxMessageBytes),
-				zap.Int("max-message-bytes", options.MaxMessageBytes))
-			options.MaxMessageBytes = topicMaxMessageBytes
+				zap.Int("max-message-bytes", options.MaxMessageBytes),
+				zap.Int("real-max-message-bytes", maxMessageBytes))
+			options.MaxMessageBytes = maxMessageBytes
+		} else {
+			if maxMessageBytes < options.MaxMessageBytes {
+				options.MaxMessageBytes = maxMessageBytes
+			}
 		}
 
 		// no need to create the topic,
@@ -636,12 +650,18 @@ func AdjustOptions(
 	// it would use broker's `message.max.bytes` to set topic's `max.message.bytes`.
 	// TiCDC need to make sure that the producer's `MaxMessageBytes` won't larger than
 	// broker's `message.max.bytes`.
-	if brokerMessageMaxBytes < options.MaxMessageBytes {
+	maxMessageBytes := brokerMessageMaxBytes - maxMessageBytesOverhead
+	if brokerMessageMaxBytes <= options.MaxMessageBytes {
 		log.Warn("broker's `message.max.bytes` less than the `max-message-bytes`,"+
 			"use broker's `message.max.bytes` to initialize the Kafka producer",
 			zap.Int("message.max.bytes", brokerMessageMaxBytes),
-			zap.Int("max-message-bytes", options.MaxMessageBytes))
-		options.MaxMessageBytes = brokerMessageMaxBytes
+			zap.Int("max-message-bytes", options.MaxMessageBytes),
+			zap.Int("real-max-message-bytes", maxMessageBytes))
+		options.MaxMessageBytes = maxMessageBytes
+	} else {
+		if maxMessageBytes < options.MaxMessageBytes {
+			options.MaxMessageBytes = maxMessageBytes
+		}
 	}
 
 	// topic not exists yet, and user does not specify the `partition-num` in the sink uri.
@@ -664,7 +684,7 @@ func validateMinInsyncReplicas(
 		info, exists := topics[topic]
 		if exists {
 			minInsyncReplicasStr, err := getTopicConfig(
-				ctx, admin, info,
+				ctx, admin, info.Name,
 				MinInsyncReplicasConfigName,
 				MinInsyncReplicasConfigName)
 			if err != nil {
@@ -685,7 +705,7 @@ func validateMinInsyncReplicas(
 	minInsyncReplicasStr, exists, err := minInsyncReplicasConfigGetter()
 	if err != nil {
 		// 'min.insync.replica' is invisible to us in Confluent Cloud Kafka.
-		if cerror.ErrKafkaBrokerConfigNotFound.Equal(err) {
+		if cerror.ErrKafkaConfigNotFound.Equal(err) {
 			log.Warn("TiCDC cannot find `min.insync.replicas` from broker's configuration, " +
 				"please make sure that the replication factor is greater than or equal " +
 				"to the minimum number of in-sync replicas" +
@@ -728,13 +748,15 @@ func validateMinInsyncReplicas(
 func getTopicConfig(
 	ctx context.Context,
 	admin ClusterAdminClient,
-	detail TopicDetail,
+	topicName string,
 	topicConfigName string,
 	brokerConfigName string,
 ) (string, error) {
-	if a, ok := detail.ConfigEntries[topicConfigName]; ok {
-		return a, nil
+	if c, err := admin.GetTopicConfig(ctx, topicName, topicConfigName); err == nil {
+		return c, nil
 	}
 
+	log.Info("TiCDC cannot find the configuration from topic, try to get it from broker",
+		zap.String("topic", topicName), zap.String("config", topicConfigName))
 	return admin.GetBrokerConfig(ctx, brokerConfigName)
 }

@@ -18,24 +18,26 @@ import (
 	"sync"
 
 	"github.com/pingcap/errors"
-	"github.com/pingcap/tiflow/cdc/contextutil"
+	"github.com/pingcap/failpoint"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sink/dmlsink"
 	"github.com/pingcap/tiflow/cdc/sink/dmlsink/mq/dispatcher"
 	"github.com/pingcap/tiflow/cdc/sink/dmlsink/mq/dmlproducer"
 	"github.com/pingcap/tiflow/cdc/sink/dmlsink/mq/manager"
+	"github.com/pingcap/tiflow/cdc/sink/dmlsink/mq/transformer"
 	"github.com/pingcap/tiflow/cdc/sink/metrics"
 	"github.com/pingcap/tiflow/cdc/sink/tablesink/state"
 	"github.com/pingcap/tiflow/pkg/config"
-	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/sink"
-	"github.com/pingcap/tiflow/pkg/sink/codec/builder"
-	"github.com/pingcap/tiflow/pkg/sink/codec/common"
+	"github.com/pingcap/tiflow/pkg/sink/codec"
 	"github.com/pingcap/tiflow/pkg/sink/kafka"
+	"go.uber.org/atomic"
+	"go.uber.org/zap"
 )
 
 // Assert EventSink[E event.TableEvent] implementation
-var _ dmlsink.EventSink[*model.RowChangedEvent] = (*dmlSink)(nil)
+var _ dmlsink.EventSink[*model.SingleTableTxn] = (*dmlSink)(nil)
 
 // dmlSink is the mq sink.
 // It will send the events to the MQ system.
@@ -47,6 +49,8 @@ type dmlSink struct {
 
 	alive struct {
 		sync.RWMutex
+
+		transformer transformer.Transformer
 		// eventRouter used to route events to the right topic and partition.
 		eventRouter *dispatcher.EventRouter
 		// topicManager used to manage topics.
@@ -61,42 +65,41 @@ type dmlSink struct {
 	adminClient kafka.ClusterAdminClient
 
 	ctx    context.Context
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 
 	wg   sync.WaitGroup
 	dead chan struct{}
+
+	scheme string
 }
 
 func newDMLSink(
 	ctx context.Context,
+	changefeedID model.ChangeFeedID,
 	producer dmlproducer.DMLProducer,
 	adminClient kafka.ClusterAdminClient,
 	topicManager manager.TopicManager,
 	eventRouter *dispatcher.EventRouter,
-	encoderConfig *common.Config,
-	encoderConcurrency int,
+	transformer transformer.Transformer,
+	encoderGroup codec.EncoderGroup,
+	protocol config.Protocol,
+	scheme string,
 	errCh chan error,
-) (*dmlSink, error) {
-	changefeedID := contextutil.ChangefeedIDFromCtx(ctx)
-
-	encoderBuilder, err := builder.NewRowEventEncoderBuilder(ctx, encoderConfig)
-	if err != nil {
-		return nil, cerror.WrapError(cerror.ErrKafkaInvalidConfig, err)
-	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	statistics := metrics.NewStatistics(ctx, sink.RowSink)
-	worker := newWorker(changefeedID, encoderConfig.Protocol,
-		encoderBuilder, encoderConcurrency, producer, statistics)
+) *dmlSink {
+	ctx, cancel := context.WithCancelCause(ctx)
+	statistics := metrics.NewStatistics(ctx, changefeedID, sink.RowSink)
+	worker := newWorker(changefeedID, protocol, producer, encoderGroup, statistics)
 
 	s := &dmlSink{
 		id:          changefeedID,
-		protocol:    encoderConfig.Protocol,
+		protocol:    protocol,
 		adminClient: adminClient,
 		ctx:         ctx,
 		cancel:      cancel,
 		dead:        make(chan struct{}),
+		scheme:      scheme,
 	}
+	s.alive.transformer = transformer
 	s.alive.eventRouter = eventRouter
 	s.alive.topicManager = topicManager
 	s.alive.worker = worker
@@ -113,57 +116,114 @@ func newDMLSink(
 		s.alive.Unlock()
 		close(s.dead)
 
-		if err != nil && errors.Cause(err) != context.Canceled {
+		if err != nil {
+			if errors.Cause(err) == context.Canceled {
+				err = context.Cause(ctx)
+			}
 			select {
-			case <-ctx.Done():
 			case errCh <- err:
+				log.Warn("mq dml sink meet error",
+					zap.String("namespace", s.id.Namespace),
+					zap.String("changefeed", s.id.ID),
+					zap.Error(err))
+			default:
+				log.Info("mq dml sink meet error, ignored",
+					zap.String("namespace", s.id.Namespace),
+					zap.String("changefeed", s.id.ID),
+					zap.Error(err))
 			}
 		}
 	}()
 
-	return s, nil
+	return s
 }
 
 // WriteEvents writes events to the sink.
 // This is an asynchronously and thread-safe method.
-func (s *dmlSink) WriteEvents(rows ...*dmlsink.RowChangeCallbackableEvent) error {
+func (s *dmlSink) WriteEvents(txns ...*dmlsink.CallbackableEvent[*model.SingleTableTxn]) error {
 	s.alive.RLock()
 	defer s.alive.RUnlock()
 	if s.alive.isDead {
 		return errors.Trace(errors.New("dead dmlSink"))
 	}
-
-	for _, row := range rows {
-		if row.GetTableSinkState() != state.TableSinkSinking {
-			// The table where the event comes from is in stopping, so it's safe
-			// to drop the event directly.
-			row.Callback()
-			continue
-		}
-		topic := s.alive.eventRouter.GetTopicForRowChange(row.Event)
-		partitionNum, err := s.alive.topicManager.GetPartitionNum(s.ctx, topic)
-		if err != nil {
-			return errors.Trace(err)
-		}
-		partition := s.alive.eventRouter.GetPartitionForRowChange(row.Event, partitionNum)
-		// This never be blocked because this is an unbounded channel.
-		s.alive.worker.msgChan.In() <- mqEvent{
-			key: TopicPartitionKey{
-				Topic: topic, Partition: partition,
-			},
-			rowEvent: row,
+	// Because we split txn to rows when sending to the MQ.
+	// So we need to convert the txn level callback to row level callback.
+	toRowCallback := func(txnCallback func(), totalCount uint64) func() {
+		var calledCount atomic.Uint64
+		// The callback of the last row will trigger the callback of the txn.
+		return func() {
+			if calledCount.Inc() == totalCount {
+				txnCallback()
+			}
 		}
 	}
 
+	for _, txn := range txns {
+		if txn.GetTableSinkState() != state.TableSinkSinking {
+			// The table where the event comes from is in stopping, so it's safe
+			// to drop the event directly.
+			txn.Callback()
+			continue
+		}
+		rowCallback := toRowCallback(txn.Callback, uint64(len(txn.Event.Rows)))
+		for _, row := range txn.Event.Rows {
+			topic := s.alive.eventRouter.GetTopicForRowChange(row)
+			partitionNum, err := s.alive.topicManager.GetPartitionNum(s.ctx, topic)
+			failpoint.Inject("MQSinkGetPartitionError", func() {
+				log.Info("failpoint MQSinkGetPartitionError injected", zap.String("changefeedID", s.id.ID))
+				err = errors.New("MQSinkGetPartitionError")
+			})
+			if err != nil {
+				s.cancel(err)
+				return errors.Trace(err)
+			}
+
+			err = s.alive.transformer.Apply(row)
+			if err != nil {
+				s.cancel(err)
+				return errors.Trace(err)
+			}
+			// Note: Calculate the partition index after the transformer is applied.
+			// Because the transformer may change the row of the event.
+			index, key, err := s.alive.eventRouter.GetPartitionForRowChange(row, partitionNum)
+			if err != nil {
+				s.cancel(err)
+				return errors.Trace(err)
+			}
+
+			// This never be blocked because this is an unbounded channel.
+			// We already limit the memory usage by MemoryQuota at SinkManager level.
+			// So it is safe to send the event to a unbounded channel here.
+			s.alive.worker.msgChan.In() <- mqEvent{
+				key: model.TopicPartitionKey{
+					Topic:          topic,
+					Partition:      index,
+					PartitionKey:   key,
+					TotalPartition: partitionNum,
+				},
+				rowEvent: &dmlsink.RowChangeCallbackableEvent{
+					Event:     row,
+					Callback:  rowCallback,
+					SinkState: txn.SinkState,
+				},
+			}
+		}
+	}
 	return nil
 }
 
 // Close closes the sink.
 func (s *dmlSink) Close() {
 	if s.cancel != nil {
-		s.cancel()
+		s.cancel(nil)
 	}
 	s.wg.Wait()
+
+	s.alive.RLock()
+	if s.alive.topicManager != nil {
+		s.alive.topicManager.Close()
+	}
+	s.alive.RUnlock()
 
 	if s.adminClient != nil {
 		s.adminClient.Close()
@@ -173,4 +233,9 @@ func (s *dmlSink) Close() {
 // Dead checks whether it's dead or not.
 func (s *dmlSink) Dead() <-chan struct{} {
 	return s.dead
+}
+
+// Scheme returns the scheme of this sink.
+func (s *dmlSink) Scheme() string {
+	return s.scheme
 }

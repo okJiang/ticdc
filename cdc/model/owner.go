@@ -18,7 +18,7 @@ import (
 	"fmt"
 
 	"github.com/pingcap/errors"
-	timodel "github.com/pingcap/tidb/parser/model"
+	timodel "github.com/pingcap/tidb/pkg/parser/model"
 	"github.com/pingcap/tiflow/cdc/processor/tablepb"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 )
@@ -74,7 +74,6 @@ type DDLJobEntry struct {
 	Job    *timodel.Job
 	OpType OpType
 	CRTs   uint64
-	Err    error
 }
 
 // TaskPosition records the process information of a capture
@@ -269,14 +268,16 @@ func (p ProcessorsInfos) String() string {
 }
 
 // ChangeFeedStatus stores information about a ChangeFeed
+// It is stored in etcd.
 type ChangeFeedStatus struct {
-	ResolvedTs   uint64 `json:"resolved-ts"`
 	CheckpointTs uint64 `json:"checkpoint-ts"`
 	// minTableBarrierTs is the minimum commitTs of all DDL events and is only
 	// used to check whether there is a pending DDL job at the checkpointTs when
 	// initializing the changefeed.
-	MinTableBarrierTs uint64       `json:"min-table-barrier-ts"`
-	AdminJobType      AdminJobType `json:"admin-job-type"`
+	MinTableBarrierTs uint64 `json:"min-table-barrier-ts"`
+	// TODO: remove this filed after we don't use ChangeFeedStatus to
+	// control processor. This is too ambiguous.
+	AdminJobType AdminJobType `json:"admin-job-type"`
 }
 
 // Marshal returns json encoded string of ChangeFeedStatus, only contains necessary fields stored in storage

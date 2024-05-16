@@ -46,8 +46,8 @@ type Scheduler interface {
 		// barrier contains the barrierTs of those tables that have
 		// ddl jobs that need to be replicated. The Scheduler will
 		// broadcast the barrierTs to all captures through the Heartbeat.
-		barrier *schedulepb.Barrier,
-	) (newCheckpointTs, newResolvedTs model.Ts, err error)
+		barrier *schedulepb.BarrierWithMinTs,
+	) (watermark schedulepb.Watermark, err error)
 
 	// MoveTable requests that a table be moved to target.
 	// It is thread-safe.

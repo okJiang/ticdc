@@ -366,7 +366,7 @@ func decodeColumnGroup(bits []byte, allocator *SliceAllocator, dict *termDiction
 	}, nil
 }
 
-func newColumnGroup(allocator *SliceAllocator, ty byte, columns []*model.Column) (int, *columnGroup) {
+func newColumnGroup(allocator *SliceAllocator, ty byte, columns []*model.Column, onlyHandleKeyColumns bool) (int, *columnGroup) {
 	l := len(columns)
 	if l == 0 {
 		return 0, nil
@@ -379,6 +379,9 @@ func newColumnGroup(allocator *SliceAllocator, ty byte, columns []*model.Column)
 	idx := 0
 	for _, col := range columns {
 		if col == nil {
+			continue
+		}
+		if onlyHandleKeyColumns && !col.Flag.IsHandleKey() {
 			continue
 		}
 		names[idx] = col.Name
@@ -404,7 +407,7 @@ func newColumnGroup(allocator *SliceAllocator, ty byte, columns []*model.Column)
 // Row changed message is basically an array of column groups
 type rowChangedEvent = []*columnGroup
 
-func newRowChangedMessage(allocator *SliceAllocator, ev *model.RowChangedEvent) (int, rowChangedEvent) {
+func newRowChangedMessage(allocator *SliceAllocator, ev *model.RowChangedEvent, onlyHandleKeyColumns bool) (int, rowChangedEvent) {
 	numGroups := 0
 	if ev.PreColumns != nil {
 		numGroups++
@@ -415,12 +418,21 @@ func newRowChangedMessage(allocator *SliceAllocator, ev *model.RowChangedEvent) 
 	groups := allocator.columnGroupSlice(numGroups)
 	estimatedSize := 0
 	idx := 0
-	if size, group := newColumnGroup(allocator, columnGroupTypeNew, ev.Columns); group != nil {
+	if size, group := newColumnGroup(
+		allocator,
+		columnGroupTypeNew,
+		ev.GetColumns(),
+		false); group != nil {
 		groups[idx] = group
 		idx++
 		estimatedSize += size
 	}
-	if size, group := newColumnGroup(allocator, columnGroupTypeOld, ev.PreColumns); group != nil {
+	onlyHandleKeyColumns = onlyHandleKeyColumns && ev.IsDelete()
+	if size, group := newColumnGroup(
+		allocator,
+		columnGroupTypeOld,
+		ev.GetPreColumns(),
+		onlyHandleKeyColumns); group != nil {
 		groups[idx] = group
 		estimatedSize += size
 	}
@@ -454,18 +466,18 @@ func (b *RowChangedEventBuffer) Encode() []byte {
 }
 
 // AppendRowChangedEvent append a new event to buffer
-func (b *RowChangedEventBuffer) AppendRowChangedEvent(ev *model.RowChangedEvent) (rows, size int) {
+func (b *RowChangedEventBuffer) AppendRowChangedEvent(ev *model.RowChangedEvent, onlyHandleKeyColumns bool) (rows, size int) {
 	var partition int64 = -1
-	if ev.Table.IsPartition {
-		partition = ev.Table.TableID
+	if ev.TableInfo.IsPartitionTable() {
+		partition = ev.PhysicalTableID
 	}
 
 	var schema, table *string
-	if len(ev.Table.Schema) > 0 {
-		schema = &ev.Table.Schema
+	if len(ev.TableInfo.GetSchemaName()) > 0 {
+		schema = ev.TableInfo.GetSchemaNamePtr()
 	}
-	if len(ev.Table.Table) > 0 {
-		table = &ev.Table.Table
+	if len(ev.TableInfo.GetTableName()) > 0 {
+		table = ev.TableInfo.GetTableNamePtr()
 	}
 
 	b.estimatedSize += b.headers.appendHeader(
@@ -479,7 +491,7 @@ func (b *RowChangedEventBuffer) AppendRowChangedEvent(ev *model.RowChangedEvent)
 	if b.eventsCount+1 > len(b.events) {
 		b.events = b.allocator.resizeRowChangedEventSlice(b.events, newBufferSize(b.eventsCount))
 	}
-	size, message := newRowChangedMessage(b.allocator, ev)
+	size, message := newRowChangedMessage(b.allocator, ev, onlyHandleKeyColumns)
 	b.events[b.eventsCount] = message
 	b.eventsCount++
 	b.estimatedSize += size

@@ -26,7 +26,7 @@ var (
 		"enhance_online_schema_change": true,
 		"meta_schema": "dm_meta",
 		"name": "test",
-		"on_duplicate": "error",
+		"on_duplicate": "replace",
 		"source_config": {
 		  "full_migrate_conf": {
 			"data_dir": "./exported_data",
@@ -53,7 +53,8 @@ var (
 		  "security": null,
 		  "user": "root"
 		},
-		"task_mode": "all"
+		"task_mode": "all",
+		"strict_optimistic_shard_mode": false
 	}
 	`
 
@@ -62,7 +63,7 @@ var (
 		"enhance_online_schema_change": true,
 		"meta_schema": "dm_meta",
 		"name": "a5fb4a7540d343fa853c55ade2d08e6d03681d9e05d6240c0",
-		"on_duplicate": "error",
+		"on_duplicate": "replace",
 		"source_config": {
 		  "full_migrate_conf": {
 			"data_dir": "./exported_data",
@@ -102,8 +103,9 @@ var (
 		"enhance_online_schema_change": true,
 		"meta_schema": "dm_meta",
 		"name": "test",
-		"on_duplicate": "error",
-		"shard_mode": "pessimistic",
+		"on_duplicate": "replace",
+		"shard_mode": "optimistic",
+		"strict_optimistic_shard_mode": true,
 		"source_config": {
 		  "full_migrate_conf": {
 			"data_dir": "./exported_data",

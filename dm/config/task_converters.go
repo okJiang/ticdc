@@ -17,16 +17,16 @@ import (
 	"fmt"
 	"strings"
 
-	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
 	"github.com/pingcap/tidb-tools/pkg/column-mapping"
-	"github.com/pingcap/tidb/util/filter"
-	router "github.com/pingcap/tidb/util/table-router"
+	"github.com/pingcap/tidb/pkg/util/filter"
+	router "github.com/pingcap/tidb/pkg/util/table-router"
 	"github.com/pingcap/tiflow/dm/config/dbconfig"
 	"github.com/pingcap/tiflow/dm/config/security"
 	"github.com/pingcap/tiflow/dm/openapi"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/storage"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
+	bf "github.com/pingcap/tiflow/pkg/binlog-filter"
 	"go.uber.org/zap"
 )
 
@@ -42,6 +42,7 @@ func TaskConfigToSubTaskConfigs(c *TaskConfig, sources map[string]dbconfig.DBCon
 		cfg := NewSubTaskConfig()
 		cfg.IsSharding = c.IsSharding
 		cfg.ShardMode = c.ShardMode
+		cfg.StrictOptimisticShardMode = c.StrictOptimisticShardMode
 		cfg.OnlineDDL = c.OnlineDDL
 		cfg.TrashTableRules = c.TrashTableRules
 		cfg.ShadowTableRules = c.ShadowTableRules
@@ -181,6 +182,9 @@ func OpenAPITaskToSubTaskConfigs(task *openapi.Task, toDBCfg *dbconfig.DBConfig,
 		} else {
 			subTaskCfg.IsSharding = false
 		}
+		if task.StrictOptimisticShardMode != nil {
+			subTaskCfg.StrictOptimisticShardMode = *task.StrictOptimisticShardMode
+		}
 		// set online ddl plugin config
 		subTaskCfg.OnlineDDL = task.EnhanceOnlineSchemaChange
 		// set case sensitive from source
@@ -195,6 +199,15 @@ func OpenAPITaskToSubTaskConfigs(task *openapi.Task, toDBCfg *dbconfig.DBConfig,
 		subTaskCfg.MydumperConfig = DefaultMydumperConfig()
 		subTaskCfg.LoaderConfig = DefaultLoaderConfig()
 		if fullCfg := task.SourceConfig.FullMigrateConf; fullCfg != nil {
+			if fullCfg.Analyze != nil {
+				subTaskCfg.LoaderConfig.Analyze = PhysicalPostOpLevel(*fullCfg.Analyze)
+			}
+			if fullCfg.Checksum != nil {
+				subTaskCfg.LoaderConfig.ChecksumPhysical = PhysicalPostOpLevel(*fullCfg.Checksum)
+			}
+			if fullCfg.CompressKvPairs != nil {
+				subTaskCfg.CompressKVPairs = *fullCfg.CompressKvPairs
+			}
 			if fullCfg.Consistency != nil {
 				subTaskCfg.MydumperConfig.ExtraArgs = fmt.Sprintf("--consistency %s", *fullCfg.Consistency)
 			}
@@ -207,7 +220,29 @@ func OpenAPITaskToSubTaskConfigs(task *openapi.Task, toDBCfg *dbconfig.DBConfig,
 			if fullCfg.DataDir != nil {
 				subTaskCfg.LoaderConfig.Dir = *fullCfg.DataDir
 			}
-			subTaskCfg.LoaderConfig.OnDuplicateLogical = LogicalDuplicateResolveType(task.OnDuplicate)
+			if fullCfg.DiskQuota != nil {
+				if err := subTaskCfg.LoaderConfig.DiskQuotaPhysical.UnmarshalText([]byte(*fullCfg.DiskQuota)); err != nil {
+					return nil, err
+				}
+			}
+			if fullCfg.ImportMode != nil {
+				subTaskCfg.LoaderConfig.ImportMode = LoadMode(*fullCfg.ImportMode)
+			}
+			if fullCfg.OnDuplicateLogical != nil {
+				subTaskCfg.LoaderConfig.OnDuplicateLogical = LogicalDuplicateResolveType(*fullCfg.OnDuplicateLogical)
+			}
+			if fullCfg.OnDuplicatePhysical != nil {
+				subTaskCfg.LoaderConfig.OnDuplicatePhysical = PhysicalDuplicateResolveType(*fullCfg.OnDuplicatePhysical)
+			}
+			if fullCfg.PdAddr != nil {
+				subTaskCfg.LoaderConfig.PDAddr = *fullCfg.PdAddr
+			}
+			if fullCfg.RangeConcurrency != nil {
+				subTaskCfg.LoaderConfig.RangeConcurrency = *fullCfg.RangeConcurrency
+			}
+			if fullCfg.SortingDir != nil {
+				subTaskCfg.LoaderConfig.SortingDirPhysical = *fullCfg.SortingDir
+			}
 		}
 		// set incremental config
 		subTaskCfg.SyncerConfig = DefaultSyncerConfig()
@@ -314,6 +349,7 @@ func SubTaskConfigsToTaskConfig(stCfgs ...*SubTaskConfig) *TaskConfig {
 	c.TaskMode = stCfg0.Mode
 	c.IsSharding = stCfg0.IsSharding
 	c.ShardMode = stCfg0.ShardMode
+	c.StrictOptimisticShardMode = stCfg0.StrictOptimisticShardMode
 	c.IgnoreCheckingItems = stCfg0.IgnoreCheckingItems
 	c.MetaSchema = stCfg0.MetaSchema
 	c.EnableHeartbeat = stCfg0.EnableHeartbeat
@@ -611,6 +647,7 @@ func SubTaskConfigsToOpenAPITask(subTaskConfigList []*SubTaskConfig) *openapi.Ta
 		taskShardMode := openapi.TaskShardMode(oneSubtaskConfig.ShardMode)
 		task.ShardMode = &taskShardMode
 	}
+	task.StrictOptimisticShardMode = &oneSubtaskConfig.StrictOptimisticShardMode
 	if len(filterMap) > 0 {
 		task.BinlogFilterRule = &filterRuleMap
 	}
@@ -627,8 +664,6 @@ func TaskConfigToOpenAPITask(c *TaskConfig, sourceCfgMap map[string]*SourceConfi
 	cfgs := make(map[string]dbconfig.DBConfig)
 	for _, source := range c.MySQLInstances {
 		if cfg, ok := sourceCfgMap[source.SourceID]; ok {
-			// check the password
-			cfg.DecryptPassword()
 			cfgs[source.SourceID] = cfg.From
 		}
 	}

@@ -18,20 +18,21 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pingcap/tidb/parser/charset"
-	timodel "github.com/pingcap/tidb/parser/model"
-	"github.com/pingcap/tidb/parser/mysql"
-	"github.com/pingcap/tidb/types"
-	"github.com/pingcap/tidb/util/rowcodec"
+	"github.com/pingcap/tidb/pkg/kv"
+	"github.com/pingcap/tidb/pkg/parser/mysql"
+	"github.com/pingcap/tidb/pkg/types"
+	"github.com/pingcap/tidb/pkg/util/rowcodec"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/pkg/config"
 	"github.com/pingcap/tiflow/pkg/sink/codec/common"
 	"github.com/stretchr/testify/require"
 )
 
 type csvTestColumnTuple struct {
-	col     model.Column
-	colInfo rowcodec.ColInfo
-	want    interface{}
+	col                  model.Column
+	colInfo              rowcodec.ColInfo
+	want                 interface{}
+	BinaryEncodingMethod string
 }
 
 var csvTestColumnsGroup = [][]*csvTestColumnTuple{
@@ -45,6 +46,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeTiny),
 			},
 			int64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "short", Value: int64(1), Type: mysql.TypeShort},
@@ -55,6 +57,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeShort),
 			},
 			int64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "int24", Value: int64(1), Type: mysql.TypeInt24},
@@ -65,6 +68,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeInt24),
 			},
 			int64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "long", Value: int64(1), Type: mysql.TypeLong},
@@ -75,6 +79,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeLong),
 			},
 			int64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "longlong", Value: int64(1), Type: mysql.TypeLonglong},
@@ -85,6 +90,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeLonglong),
 			},
 			int64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -100,6 +106,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setFlag(types.NewFieldType(mysql.TypeTiny), uint(model.UnsignedFlag)),
 			},
 			uint64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -115,6 +122,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setFlag(types.NewFieldType(mysql.TypeShort), uint(model.UnsignedFlag)),
 			},
 			uint64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -130,6 +138,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setFlag(types.NewFieldType(mysql.TypeInt24), uint(model.UnsignedFlag)),
 			},
 			uint64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -145,6 +154,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setFlag(types.NewFieldType(mysql.TypeLong), uint(model.UnsignedFlag)),
 			},
 			uint64(1),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -163,6 +173,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				),
 			},
 			uint64(1),
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -175,6 +186,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeFloat),
 			},
 			float64(3.14),
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "double", Value: float64(3.14), Type: mysql.TypeDouble},
@@ -185,6 +197,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeDouble),
 			},
 			float64(3.14),
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -197,6 +210,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeBit),
 			},
 			uint64(683),
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -209,6 +223,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeNewDecimal),
 			},
 			"129012.1230000",
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -221,6 +236,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeBlob),
 			},
 			"hello world",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "mediumtext", Value: []byte("hello world"), Type: mysql.TypeMediumBlob},
@@ -231,6 +247,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeMediumBlob),
 			},
 			"hello world",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "text", Value: []byte("hello world"), Type: mysql.TypeBlob},
@@ -241,6 +258,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeBlob),
 			},
 			"hello world",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "longtext", Value: []byte("hello world"), Type: mysql.TypeLongBlob},
@@ -251,6 +269,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeLongBlob),
 			},
 			"hello world",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "varchar", Value: []byte("hello world"), Type: mysql.TypeVarchar},
@@ -261,6 +280,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeVarchar),
 			},
 			"hello world",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "varstring", Value: []byte("hello world"), Type: mysql.TypeVarString},
@@ -271,6 +291,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeVarString),
 			},
 			"hello world",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "string", Value: []byte("hello world"), Type: mysql.TypeString},
@@ -281,6 +302,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeString),
 			},
 			"hello world",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "json", Value: `{"key": "value"}`, Type: mysql.TypeJSON},
@@ -291,6 +313,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeJSON),
 			},
 			`{"key": "value"}`,
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -308,6 +331,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeTinyBlob)),
 			},
 			"aGVsbG8gd29ybGQ=",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -323,6 +347,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeMediumBlob)),
 			},
 			"aGVsbG8gd29ybGQ=",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -338,6 +363,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeBlob)),
 			},
 			"aGVsbG8gd29ybGQ=",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -353,6 +379,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeLongBlob)),
 			},
 			"aGVsbG8gd29ybGQ=",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -368,6 +395,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeVarchar)),
 			},
 			"aGVsbG8gd29ybGQ=",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -383,6 +411,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeVarString)),
 			},
 			"aGVsbG8gd29ybGQ=",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{
@@ -398,6 +427,121 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeString)),
 			},
 			"aGVsbG8gd29ybGQ=",
+			config.BinaryEncodingBase64,
+		},
+	},
+	{
+		{
+			model.Column{
+				Name:  "tinyblob",
+				Value: []byte("hello world"),
+				Type:  mysql.TypeTinyBlob,
+				Flag:  model.BinaryFlag,
+			},
+			rowcodec.ColInfo{
+				ID:            22,
+				IsPKHandle:    false,
+				VirtualGenCol: false,
+				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeTinyBlob)),
+			},
+			"68656c6c6f20776f726c64",
+			config.BinaryEncodingHex,
+		},
+		{
+			model.Column{
+				Name:  "mediumblob",
+				Value: []byte("hello world"),
+				Type:  mysql.TypeMediumBlob,
+				Flag:  model.BinaryFlag,
+			},
+			rowcodec.ColInfo{
+				ID:            23,
+				IsPKHandle:    false,
+				VirtualGenCol: false,
+				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeMediumBlob)),
+			},
+			"68656c6c6f20776f726c64",
+			config.BinaryEncodingHex,
+		},
+		{
+			model.Column{
+				Name:  "blob",
+				Value: []byte("hello world"),
+				Type:  mysql.TypeBlob,
+				Flag:  model.BinaryFlag,
+			},
+			rowcodec.ColInfo{
+				ID:            24,
+				IsPKHandle:    false,
+				VirtualGenCol: false,
+				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeBlob)),
+			},
+			"68656c6c6f20776f726c64",
+			config.BinaryEncodingHex,
+		},
+		{
+			model.Column{
+				Name:  "longblob",
+				Value: []byte("hello world"),
+				Type:  mysql.TypeLongBlob,
+				Flag:  model.BinaryFlag,
+			},
+			rowcodec.ColInfo{
+				ID:            25,
+				IsPKHandle:    false,
+				VirtualGenCol: false,
+				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeLongBlob)),
+			},
+			"68656c6c6f20776f726c64",
+			config.BinaryEncodingHex,
+		},
+		{
+			model.Column{
+				Name:  "varbinary",
+				Value: []byte("hello world"),
+				Type:  mysql.TypeVarchar,
+				Flag:  model.BinaryFlag,
+			},
+			rowcodec.ColInfo{
+				ID:            26,
+				IsPKHandle:    false,
+				VirtualGenCol: false,
+				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeVarchar)),
+			},
+			"68656c6c6f20776f726c64",
+			config.BinaryEncodingHex,
+		},
+		{
+			model.Column{
+				Name:  "varbinary1",
+				Value: []byte("hello world"),
+				Type:  mysql.TypeVarString,
+				Flag:  model.BinaryFlag,
+			},
+			rowcodec.ColInfo{
+				ID:            27,
+				IsPKHandle:    false,
+				VirtualGenCol: false,
+				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeVarString)),
+			},
+			"68656c6c6f20776f726c64",
+			config.BinaryEncodingHex,
+		},
+		{
+			model.Column{
+				Name:  "binary",
+				Value: []byte("hello world"),
+				Type:  mysql.TypeString,
+				Flag:  model.BinaryFlag,
+			},
+			rowcodec.ColInfo{
+				ID:            28,
+				IsPKHandle:    false,
+				VirtualGenCol: false,
+				Ft:            setBinChsClnFlag(types.NewFieldType(mysql.TypeString)),
+			},
+			"68656c6c6f20776f726c64",
+			config.BinaryEncodingHex,
 		},
 	},
 	{
@@ -410,6 +554,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setElems(types.NewFieldType(mysql.TypeEnum), []string{"a,", "b"}),
 			},
 			"a,",
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -422,6 +567,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            setElems(types.NewFieldType(mysql.TypeSet), []string{"a", "b", "c", "d"}),
 			},
 			"a,d",
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -434,6 +580,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeDate),
 			},
 			"2000-01-01",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "datetime", Value: "2015-12-20 23:58:58", Type: mysql.TypeDatetime},
@@ -444,6 +591,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeDatetime),
 			},
 			"2015-12-20 23:58:58",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "timestamp", Value: "1973-12-30 15:30:00", Type: mysql.TypeTimestamp},
@@ -454,6 +602,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeTimestamp),
 			},
 			"1973-12-30 15:30:00",
+			config.BinaryEncodingBase64,
 		},
 		{
 			model.Column{Name: "time", Value: "23:59:59", Type: mysql.TypeDuration},
@@ -464,6 +613,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeDuration),
 			},
 			"23:59:59",
+			config.BinaryEncodingBase64,
 		},
 	},
 	{
@@ -476,6 +626,7 @@ var csvTestColumnsGroup = [][]*csvTestColumnTuple{
 				Ft:            types.NewFieldType(mysql.TypeYear),
 			},
 			int64(1970),
+			config.BinaryEncodingBase64,
 		},
 	},
 }
@@ -590,7 +741,9 @@ func TestCSVMessageEncode(t *testing.T) {
 		tableName  string
 		schemaName string
 		commitTs   uint64
+		preColumns []any
 		columns    []any
+		HandleKey  kv.Handle
 	}
 	testCases := []struct {
 		name   string
@@ -632,6 +785,48 @@ func TestCSVMessageEncode(t *testing.T) {
 				columns:    []any{"a!b!c", "def"},
 			},
 			want: []byte(`U!table2!test!435661838416609281!a\!b\!c!def` + "\n"),
+		},
+		{
+			name: "csv encode values containing single-character delimter string, without quote mark, update with old value",
+			fields: fields{
+				config: &common.Config{
+					Delimiter:       "!",
+					Quote:           "",
+					Terminator:      "\n",
+					NullString:      "\\N",
+					IncludeCommitTs: true,
+					OutputOldValue:  true,
+					OutputHandleKey: true,
+				},
+				opType:     operationUpdate,
+				tableName:  "table2",
+				schemaName: "test",
+				commitTs:   435661838416609281,
+				preColumns: []any{"a!b!c", "abc"},
+				columns:    []any{"a!b!c", "def"},
+				HandleKey:  kv.IntHandle(1),
+			},
+			want: []byte(`D!table2!test!435661838416609281!true!1!a\!b\!c!abc` + "\n" +
+				`I!table2!test!435661838416609281!true!1!a\!b\!c!def` + "\n"),
+		},
+		{
+			name: "csv encode values containing single-character delimter string, without quote mark, update with old value",
+			fields: fields{
+				config: &common.Config{
+					Delimiter:       "!",
+					Quote:           "",
+					Terminator:      "\n",
+					NullString:      "\\N",
+					IncludeCommitTs: true,
+					OutputOldValue:  true,
+				},
+				opType:     operationInsert,
+				tableName:  "table2",
+				schemaName: "test",
+				commitTs:   435661838416609281,
+				columns:    []any{"a!b!c", "def"},
+			},
+			want: []byte(`I!table2!test!435661838416609281!false!a\!b\!c!def` + "\n"),
 		},
 		{
 			name: "csv encode values containing single-character delimter string, with quote mark",
@@ -751,7 +946,9 @@ func TestCSVMessageEncode(t *testing.T) {
 				schemaName: tc.fields.schemaName,
 				commitTs:   tc.fields.commitTs,
 				columns:    tc.fields.columns,
+				preColumns: tc.fields.preColumns,
 				newRecord:  true,
+				HandleKey:  tc.fields.HandleKey,
 			}
 
 			require.Equal(t, tc.want, c.encode())
@@ -762,7 +959,9 @@ func TestCSVMessageEncode(t *testing.T) {
 func TestConvertToCSVType(t *testing.T) {
 	for _, group := range csvTestColumnsGroup {
 		for _, c := range group {
-			val, _ := fromColValToCsvVal(&c.col, c.colInfo.Ft)
+			val, _ := fromColValToCsvVal(&common.Config{
+				BinaryEncodingMethod: c.BinaryEncodingMethod,
+			}, &c.col, c.colInfo.Ft)
 			require.Equal(t, c.want, val, c.col.Name)
 		}
 	}
@@ -777,45 +976,32 @@ func TestRowChangeEventConversion(t *testing.T) {
 			cols = append(cols, &c.col)
 			colInfos = append(colInfos, c.colInfo)
 		}
-		row.ColInfos = colInfos
-		row.Table = &model.TableName{
-			Table:  fmt.Sprintf("table%d", idx),
-			Schema: "test",
-		}
+		tidbTableInfo := model.BuildTiDBTableInfo(fmt.Sprintf("table%d", idx), cols, nil)
+		model.AddExtraColumnInfo(tidbTableInfo, colInfos)
+		row.TableInfo = model.WrapTableInfo(100, "test", 100, tidbTableInfo)
 
 		if idx%3 == 0 { // delete operation
-			row.PreColumns = cols
+			row.PreColumns = model.Columns2ColumnDatas(cols, row.TableInfo)
 		} else if idx%3 == 1 { // insert operation
-			row.Columns = cols
+			row.Columns = model.Columns2ColumnDatas(cols, row.TableInfo)
 		} else { // update operation
-			row.PreColumns = cols
-			row.Columns = cols
+			row.PreColumns = model.Columns2ColumnDatas(cols, row.TableInfo)
+			row.Columns = model.Columns2ColumnDatas(cols, row.TableInfo)
 		}
 		csvMsg, err := rowChangedEvent2CSVMsg(&common.Config{
-			Delimiter:       "\t",
-			Quote:           "\"",
-			Terminator:      "\n",
-			NullString:      "\\N",
-			IncludeCommitTs: true,
+			Delimiter:            "\t",
+			Quote:                "\"",
+			Terminator:           "\n",
+			NullString:           "\\N",
+			IncludeCommitTs:      true,
+			BinaryEncodingMethod: group[0].BinaryEncodingMethod,
 		}, row)
 		require.NotNil(t, csvMsg)
 		require.Nil(t, err)
 
-		ticols := make([]*timodel.ColumnInfo, 0)
-		for _, col := range cols {
-			ticol := &timodel.ColumnInfo{
-				Name:      timodel.NewCIStr(col.Name),
-				FieldType: *types.NewFieldType(col.Type),
-			}
-			if col.Flag.IsBinary() {
-				ticol.SetCharset(charset.CharsetBin)
-			} else {
-				ticol.SetCharset(mysql.DefaultCharset)
-			}
-			ticols = append(ticols, ticol)
-		}
-
-		row2, err := csvMsg2RowChangedEvent(csvMsg, ticols)
+		row2, err := csvMsg2RowChangedEvent(&common.Config{
+			BinaryEncodingMethod: group[0].BinaryEncodingMethod,
+		}, csvMsg, row.TableInfo)
 		require.Nil(t, err)
 		require.NotNil(t, row2)
 	}

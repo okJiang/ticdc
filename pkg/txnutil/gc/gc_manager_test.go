@@ -20,7 +20,6 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/cdc/model"
-	cdcContext "github.com/pingcap/tiflow/pkg/context"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/etcd"
 	"github.com/pingcap/tiflow/pkg/pdutil"
@@ -35,7 +34,7 @@ func TestUpdateGCSafePoint(t *testing.T) {
 	pdClock := pdutil.NewClock4Test()
 	gcManager := NewManager(etcd.GcServiceIDForTest(),
 		mockPDClient, pdClock).(*gcManager)
-	ctx := cdcContext.NewBackendContext4Test(true)
+	ctx := context.Background()
 
 	startTs := oracle.GoTimeToTS(time.Now())
 	mockPDClient.UpdateServiceGCSafePointFunc = func(ctx context.Context, serviceID string, ttl int64, safePoint uint64) (uint64, error) {
@@ -99,32 +98,8 @@ func TestCheckStaleCheckpointTs(t *testing.T) {
 	err := gcManager.CheckStaleCheckpointTs(ctx, cfID, oracle.GoTimeToTS(time.Now()))
 	require.Nil(t, err)
 
-	gcManager.lastSafePointTs = 20
+	gcManager.lastSafePointTs.Store(20)
 	err = gcManager.CheckStaleCheckpointTs(ctx, cfID, 10)
 	require.True(t, cerror.ErrSnapshotLostByGC.Equal(errors.Cause(err)))
-	require.True(t, cerror.IsChangefeedFastFailError(err))
-}
-
-func TestIgnoreFailedFeed(t *testing.T) {
-	t.Parallel()
-
-	mockPDClient := &MockPDClient{}
-	pdClock := pdutil.NewClock4Test()
-	gcManager := NewManager(etcd.GcServiceIDForTest(),
-		mockPDClient, pdClock).(*gcManager)
-
-	// 5 hours ago
-	ts1 := oracle.GoTimeToTS(time.Now().Add(-time.Hour * 5))
-	ret1 := gcManager.IgnoreFailedChangeFeed(ts1)
-	require.False(t, ret1)
-
-	// 20 hours ago
-	ts2 := oracle.GoTimeToTS(time.Now().Add(-time.Hour * 20))
-	ret2 := gcManager.IgnoreFailedChangeFeed(ts2)
-	require.False(t, ret2)
-
-	// 25 hours ago
-	ts3 := oracle.GoTimeToTS(time.Now().Add(-time.Hour * 25))
-	ret3 := gcManager.IgnoreFailedChangeFeed(ts3)
-	require.True(t, ret3)
+	require.True(t, cerror.IsChangefeedGCFastFailError(err))
 }

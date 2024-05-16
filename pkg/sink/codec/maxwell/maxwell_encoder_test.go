@@ -17,9 +17,10 @@ import (
 	"context"
 	"testing"
 
-	timodel "github.com/pingcap/tidb/parser/model"
-	"github.com/pingcap/tidb/parser/mysql"
+	timodel "github.com/pingcap/tidb/pkg/parser/model"
+	"github.com/pingcap/tidb/pkg/parser/mysql"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/pkg/sink/codec/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,13 +28,19 @@ func TestMaxwellBatchCodec(t *testing.T) {
 	t.Parallel()
 	newEncoder := newBatchEncoder
 
+	tableInfo := model.BuildTableInfo("a", "b", []*model.Column{{Name: "col1", Type: mysql.TypeLong}}, nil)
 	rowCases := [][]*model.RowChangedEvent{{{
-		CommitTs: 1,
-		Table:    &model.TableName{Schema: "a", Table: "b"},
-		Columns:  []*model.Column{{Name: "col1", Type: 3, Value: 10}},
+		CommitTs:  1,
+		TableInfo: tableInfo,
+		Columns: model.Columns2ColumnDatas([]*model.Column{
+			{
+				Name:  "col1",
+				Value: 10,
+			},
+		}, tableInfo),
 	}}, {}}
 	for _, cs := range rowCases {
-		encoder := newEncoder()
+		encoder := newEncoder(&common.Config{})
 		for _, row := range cs {
 			err := encoder.AppendRowChangedEvent(context.Background(), "", row, nil)
 			require.Nil(t, err)
@@ -59,7 +66,7 @@ func TestMaxwellBatchCodec(t *testing.T) {
 		Type:  1,
 	}}}
 	for _, cs := range ddlCases {
-		encoder := newEncoder()
+		encoder := newEncoder(&common.Config{})
 		for _, ddl := range cs {
 			msg, err := encoder.EncodeDDLEvent(ddl)
 			require.Nil(t, err)
@@ -69,19 +76,19 @@ func TestMaxwellBatchCodec(t *testing.T) {
 }
 
 func TestMaxwellAppendRowChangedEventWithCallback(t *testing.T) {
-	encoder := newBatchEncoder()
+	encoder := newBatchEncoder(&common.Config{})
 	require.NotNil(t, encoder)
 
 	count := 0
 
+	tableInfo := model.BuildTableInfo("a", "b", []*model.Column{{Name: "col1", Type: mysql.TypeVarchar}}, nil)
 	row := &model.RowChangedEvent{
-		CommitTs: 1,
-		Table:    &model.TableName{Schema: "a", Table: "b"},
-		Columns: []*model.Column{{
+		CommitTs:  1,
+		TableInfo: tableInfo,
+		Columns: model.Columns2ColumnDatas([]*model.Column{{
 			Name:  "col1",
-			Type:  mysql.TypeVarchar,
 			Value: []byte("aa"),
-		}},
+		}}, tableInfo),
 	}
 
 	tests := []struct {

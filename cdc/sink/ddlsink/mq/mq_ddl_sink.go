@@ -18,7 +18,6 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-	"github.com/pingcap/tiflow/cdc/contextutil"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sink/ddlsink"
 	"github.com/pingcap/tiflow/cdc/sink/ddlsink/mq/ddlproducer"
@@ -26,14 +25,31 @@ import (
 	"github.com/pingcap/tiflow/cdc/sink/dmlsink/mq/manager"
 	"github.com/pingcap/tiflow/cdc/sink/metrics"
 	"github.com/pingcap/tiflow/pkg/config"
-	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/sink"
 	"github.com/pingcap/tiflow/pkg/sink/codec"
-	"github.com/pingcap/tiflow/pkg/sink/codec/builder"
-	"github.com/pingcap/tiflow/pkg/sink/codec/common"
 	"github.com/pingcap/tiflow/pkg/sink/kafka"
 	"go.uber.org/zap"
 )
+
+// DDLDispatchRule is the dispatch rule for DDL event.
+type DDLDispatchRule int
+
+const (
+	// PartitionZero means the DDL event will be dispatched to partition 0.
+	// NOTICE: Only for canal and canal-json protocol.
+	PartitionZero DDLDispatchRule = iota
+	// PartitionAll means the DDL event will be broadcast to all the partitions.
+	PartitionAll
+)
+
+func getDDLDispatchRule(protocol config.Protocol) DDLDispatchRule {
+	switch protocol {
+	case config.ProtocolCanal, config.ProtocolCanalJSON:
+		return PartitionZero
+	default:
+	}
+	return PartitionAll
+}
 
 // Assert Sink implementation
 var _ ddlsink.Sink = (*DDLSink)(nil)
@@ -61,31 +77,24 @@ type DDLSink struct {
 }
 
 func newDDLSink(ctx context.Context,
+	changefeedID model.ChangeFeedID,
 	producer ddlproducer.DDLProducer,
 	adminClient kafka.ClusterAdminClient,
 	topicManager manager.TopicManager,
 	eventRouter *dispatcher.EventRouter,
-	encoderConfig *common.Config,
-) (*DDLSink, error) {
-	changefeedID := contextutil.ChangefeedIDFromCtx(ctx)
-
-	encoderBuilder, err := builder.NewRowEventEncoderBuilder(ctx, encoderConfig)
-	if err != nil {
-		return nil, cerror.WrapError(cerror.ErrKafkaInvalidConfig, err)
-	}
-
-	s := &DDLSink{
+	encoderBuilder codec.RowEventEncoderBuilder,
+	protocol config.Protocol,
+) *DDLSink {
+	return &DDLSink{
 		id:             changefeedID,
-		protocol:       encoderConfig.Protocol,
+		protocol:       protocol,
 		eventRouter:    eventRouter,
 		topicManager:   topicManager,
 		encoderBuilder: encoderBuilder,
 		producer:       producer,
-		statistics:     metrics.NewStatistics(ctx, sink.RowSink),
+		statistics:     metrics.NewStatistics(ctx, changefeedID, sink.RowSink),
 		admin:          adminClient,
 	}
-
-	return s, nil
 }
 
 // WriteDDLEvent encodes the DDL event and sends it to the MQ system.
@@ -105,32 +114,29 @@ func (k *DDLSink) WriteDDLEvent(ctx context.Context, ddl *model.DDLEvent) error 
 	}
 
 	topic := k.eventRouter.GetTopicForDDL(ddl)
-	partitionRule := k.eventRouter.GetDLLDispatchRuleByProtocol(k.protocol)
+	partitionRule := getDDLDispatchRule(k.protocol)
 	log.Debug("Emit ddl event",
 		zap.Uint64("commitTs", ddl.CommitTs),
 		zap.String("query", ddl.Query),
 		zap.String("namespace", k.id.Namespace),
 		zap.String("changefeed", k.id.ID))
-	if partitionRule == dispatcher.PartitionAll {
-		partitionNum, err := k.topicManager.GetPartitionNum(ctx, topic)
-		if err != nil {
-			return errors.Trace(err)
-		}
+	// Notice: We must call GetPartitionNum here,
+	// which will be responsible for automatically creating topics when they don't exist.
+	// If it is not called here and kafka has `auto.create.topics.enable` turned on,
+	// then the auto-created topic will not be created as configured by ticdc.
+	partitionNum, err := k.topicManager.GetPartitionNum(ctx, topic)
+	if err != nil {
+		return errors.Trace(err)
+	}
+
+	if partitionRule == PartitionAll {
 		err = k.statistics.RecordDDLExecution(func() error {
 			return k.producer.SyncBroadcastMessage(ctx, topic, partitionNum, msg)
 		})
 		return errors.Trace(err)
 	}
-	// Notice: We must call GetPartitionNum here,
-	// which will be responsible for automatically creating topics when they don't exist.
-	// If it is not called here and kafka has `auto.create.topics.enable` turned on,
-	// then the auto-created topic will not be created as configured by ticdc.
-	_, err = k.topicManager.GetPartitionNum(ctx, topic)
-	if err != nil {
-		return errors.Trace(err)
-	}
 	err = k.statistics.RecordDDLExecution(func() error {
-		return k.producer.SyncSendMessage(ctx, topic, dispatcher.PartitionZero, msg)
+		return k.producer.SyncSendMessage(ctx, topic, 0, msg)
 	})
 	return errors.Trace(err)
 }
@@ -183,6 +189,9 @@ func (k *DDLSink) WriteCheckpointTs(ctx context.Context,
 func (k *DDLSink) Close() {
 	if k.producer != nil {
 		k.producer.Close()
+	}
+	if k.topicManager != nil {
+		k.topicManager.Close()
 	}
 	if k.admin != nil {
 		k.admin.Close()

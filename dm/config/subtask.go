@@ -28,19 +28,19 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
 	"github.com/pingcap/tidb-tools/pkg/column-mapping"
 	extstorage "github.com/pingcap/tidb/br/pkg/storage"
-	"github.com/pingcap/tidb/util/dbutil"
-	"github.com/pingcap/tidb/util/filter"
-	regexprrouter "github.com/pingcap/tidb/util/regexpr-router"
-	router "github.com/pingcap/tidb/util/table-router"
+	"github.com/pingcap/tidb/pkg/util/dbutil"
+	"github.com/pingcap/tidb/pkg/util/filter"
+	regexprrouter "github.com/pingcap/tidb/pkg/util/regexpr-router"
+	router "github.com/pingcap/tidb/pkg/util/table-router"
 	"github.com/pingcap/tiflow/dm/config/dbconfig"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/storage"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
 	"github.com/pingcap/tiflow/engine/pkg/promutil"
+	bf "github.com/pingcap/tiflow/pkg/binlog-filter"
 	"github.com/pingcap/tiflow/pkg/version"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
@@ -51,6 +51,8 @@ const (
 	ModeAll       = "all"
 	ModeFull      = "full"
 	ModeIncrement = "incremental"
+	ModeDump      = "dump"
+	ModeLoadSync  = "load&sync"
 
 	DefaultShadowTableRules = "^_(.+)_(?:new|gho)$"
 	DefaultTrashTableRules  = "^_(.+)_(?:ghc|del|old)$"
@@ -84,9 +86,10 @@ type SubTaskConfig struct {
 	flagSet *flag.FlagSet
 
 	// when in sharding, multi dm-workers do one task
-	IsSharding bool   `toml:"is-sharding" json:"is-sharding"`
-	ShardMode  string `toml:"shard-mode" json:"shard-mode"`
-	OnlineDDL  bool   `toml:"online-ddl" json:"online-ddl"`
+	IsSharding                bool   `toml:"is-sharding" json:"is-sharding"`
+	ShardMode                 string `toml:"shard-mode" json:"shard-mode"`
+	StrictOptimisticShardMode bool   `toml:"strict-optimistic-shard-mode" json:"strict-optimistic-shard-mode"`
+	OnlineDDL                 bool   `toml:"online-ddl" json:"online-ddl"`
 
 	// pt/gh-ost name rule, support regex
 	ShadowTableRules []string `yaml:"shadow-table-rules" toml:"shadow-table-rules" json:"shadow-table-rules"`
@@ -288,6 +291,9 @@ func (c *SubTaskConfig) Adjust(verifyDecryptPassword bool) error {
 	} else if c.ShardMode == "" && c.IsSharding {
 		c.ShardMode = ShardPessimistic // use the pessimistic mode as default for back compatible.
 	}
+	if c.StrictOptimisticShardMode && c.ShardMode != ShardOptimistic {
+		return terror.ErrConfigStrictOptimisticShardMode.Generate()
+	}
 
 	if len(c.ColumnMappingRules) > 0 {
 		return terror.ErrConfigColumnMappingDeprecated.Generate()
@@ -323,8 +329,8 @@ func (c *SubTaskConfig) Adjust(verifyDecryptPassword bool) error {
 		c.MetaSchema = defaultMetaSchema
 	}
 
-	// adjust dir
-	if c.Mode == ModeAll || c.Mode == ModeFull {
+	// adjust dir, no need to do for load&sync mode because it needs its own s3 repository
+	if HasLoad(c.Mode) && c.Mode != ModeLoadSync {
 		// check
 		isS3 := storage.IsS3Path(c.LoaderConfig.Dir)
 		if isS3 && c.ImportMode == LoadModeLoader {
@@ -344,12 +350,18 @@ func (c *SubTaskConfig) Adjust(verifyDecryptPassword bool) error {
 			return terror.ErrConfigLoaderDirInvalid.Delegate(err, c.LoaderConfig.Dir)
 		}
 		c.LoaderConfig.Dir = newDir
+	}
 
-		if storage.IsLocalDiskPath(newDir) {
-			// lightning will not recursively create directories, so we use same level dir
-			c.LoaderConfig.SortingDirPhysical = newDir + ".sorting"
-		} else {
-			c.LoaderConfig.SortingDirPhysical = "./sorting." + url.PathEscape(c.Name)
+	// adjust sorting dir
+	if HasLoad(c.Mode) {
+		newDir := c.LoaderConfig.Dir
+		if c.LoaderConfig.SortingDirPhysical == "" {
+			if storage.IsLocalDiskPath(newDir) {
+				// lightning will not recursively create directories, so we use same level dir
+				c.LoaderConfig.SortingDirPhysical = newDir + ".sorting"
+			} else {
+				c.LoaderConfig.SortingDirPhysical = "./sorting." + url.PathEscape(c.Name)
+			}
 		}
 	}
 
@@ -372,7 +384,7 @@ func (c *SubTaskConfig) Adjust(verifyDecryptPassword bool) error {
 	c.To.AdjustWithTimeZone(c.Timezone)
 
 	if verifyDecryptPassword {
-		_, err1 := c.DecryptPassword()
+		_, err1 := c.DecryptedClone()
 		if err1 != nil {
 			return err1
 		}
@@ -448,8 +460,8 @@ func (c *SubTaskConfig) Parse(arguments []string, verifyDecryptPassword bool) er
 	return c.Adjust(verifyDecryptPassword)
 }
 
-// DecryptPassword tries to decrypt db password in config.
-func (c *SubTaskConfig) DecryptPassword() (*SubTaskConfig, error) {
+// DecryptedClone tries to decrypt db password in config.
+func (c *SubTaskConfig) DecryptedClone() (*SubTaskConfig, error) {
 	clone, err := c.Clone()
 	if err != nil {
 		return nil, err

@@ -45,6 +45,11 @@ type ChangeFeedID struct {
 	ID        string
 }
 
+// String implements fmt.Stringer interface
+func (c ChangeFeedID) String() string {
+	return c.Namespace + "/" + c.ID
+}
+
 // DefaultChangeFeedID returns `ChangeFeedID` with default namespace
 func DefaultChangeFeedID(id string) ChangeFeedID {
 	return ChangeFeedID{
@@ -75,13 +80,19 @@ const (
 type FeedState string
 
 // All FeedStates
+// Only `StateNormal` and `StatePending` changefeed is running,
+// others are stopped.
 const (
 	StateNormal   FeedState = "normal"
-	StateError    FeedState = "error"
+	StatePending  FeedState = "pending"
 	StateFailed   FeedState = "failed"
 	StateStopped  FeedState = "stopped"
 	StateRemoved  FeedState = "removed"
 	StateFinished FeedState = "finished"
+	StateWarning  FeedState = "warning"
+	// StateUnInitialized is used for the changefeed that has not been initialized
+	// it only exists in memory for a short time and will not be persisted to storage
+	StateUnInitialized FeedState = ""
 )
 
 // ToInt return an int for each `FeedState`, only use this for metrics.
@@ -89,7 +100,7 @@ func (s FeedState) ToInt() int {
 	switch s {
 	case StateNormal:
 		return 0
-	case StateError:
+	case StatePending:
 		return 1
 	case StateFailed:
 		return 2
@@ -99,6 +110,10 @@ func (s FeedState) ToInt() int {
 		return 4
 	case StateRemoved:
 		return 5
+	case StateWarning:
+		return 6
+	case StateUnInitialized:
+		return 7
 	}
 	// -1 for unknown feed state
 	return -1
@@ -117,9 +132,18 @@ func (s FeedState) IsNeeded(need string) bool {
 			return true
 		case StateFailed:
 			return true
+		case StateWarning:
+			return true
+		case StatePending:
+			return true
 		}
 	}
 	return need == string(s)
+}
+
+// IsRunning return true if the feedState represents a running state.
+func (s FeedState) IsRunning() bool {
+	return s == StateNormal || s == StateWarning
 }
 
 // ChangeFeedInfo describes the detail of a ChangeFeed
@@ -178,6 +202,28 @@ func ValidateNamespace(namespace string) error {
 	return nil
 }
 
+// NeedBlockGC returns true if the changefeed need to block the GC safepoint.
+// Note: if the changefeed is failed by GC, it should not block the GC safepoint.
+func (info *ChangeFeedInfo) NeedBlockGC() bool {
+	switch info.State {
+	case StateNormal, StateStopped, StatePending, StateWarning:
+		return true
+	case StateFailed:
+		return !info.isFailedByGC()
+	case StateFinished, StateRemoved:
+	default:
+	}
+	return false
+}
+
+func (info *ChangeFeedInfo) isFailedByGC() bool {
+	if info.Error == nil {
+		log.Panic("changefeed info is not consistent",
+			zap.Any("state", info.State), zap.Any("error", info.Error))
+	}
+	return cerror.IsChangefeedGCFastFailErrorCode(errors.RFCErrorCode(info.Error.Code))
+}
+
 // String implements fmt.Stringer interface, but hide some sensitive information
 func (info *ChangeFeedInfo) String() (str string) {
 	var err error
@@ -193,9 +239,9 @@ func (info *ChangeFeedInfo) String() (str string) {
 		return
 	}
 
-	clone.SinkURI, err = util.MaskSinkURI(clone.SinkURI)
-	if err != nil {
-		log.Error("failed to marshal changefeed info", zap.Error(err))
+	clone.SinkURI = util.MaskSensitiveDataInURI(clone.SinkURI)
+	if clone.Config != nil {
+		clone.Config.MaskSensitiveData()
 	}
 
 	str, err = clone.Marshal()
@@ -261,7 +307,7 @@ func (info *ChangeFeedInfo) Clone() (*ChangeFeedInfo, error) {
 // VerifyAndComplete verifies changefeed info and may fill in some fields.
 // If a required field is not provided, return an error.
 // If some necessary filed is missing but can use a default value, fill in it.
-func (info *ChangeFeedInfo) VerifyAndComplete() error {
+func (info *ChangeFeedInfo) VerifyAndComplete() {
 	defaultConfig := config.GetDefaultReplicaConfig()
 	if info.Engine == "" {
 		info.Engine = SortUnified
@@ -285,8 +331,85 @@ func (info *ChangeFeedInfo) VerifyAndComplete() error {
 	if info.Config.Integrity == nil {
 		info.Config.Integrity = defaultConfig.Integrity
 	}
+	if info.Config.ChangefeedErrorStuckDuration == nil {
+		info.Config.ChangefeedErrorStuckDuration = defaultConfig.ChangefeedErrorStuckDuration
+	}
+	if info.Config.SyncedStatus == nil {
+		info.Config.SyncedStatus = defaultConfig.SyncedStatus
+	}
+	info.RmUnusedFields()
+}
 
-	return nil
+// RmUnusedFields removes unnecessary fields based on the downstream type and
+// the protocol. Since we utilize a common changefeed configuration template,
+// certain fields may not be utilized for certain protocols.
+func (info *ChangeFeedInfo) RmUnusedFields() {
+	uri, err := url.Parse(info.SinkURI)
+	if err != nil {
+		log.Warn(
+			"failed to parse the sink uri",
+			zap.Error(err),
+			zap.Any("sinkUri", info.SinkURI),
+		)
+		return
+	}
+	// blackhole is for testing purpose, no need to remove fields
+	if sink.IsBlackHoleScheme(uri.Scheme) {
+		return
+	}
+	if !sink.IsMQScheme(uri.Scheme) {
+		info.rmMQOnlyFields()
+	} else {
+		// remove schema registry for MQ downstream with
+		// protocol other than avro
+		if util.GetOrZero(info.Config.Sink.Protocol) != config.ProtocolAvro.String() {
+			info.Config.Sink.SchemaRegistry = nil
+		}
+	}
+
+	if !sink.IsStorageScheme(uri.Scheme) {
+		info.rmStorageOnlyFields()
+	}
+
+	if !sink.IsMySQLCompatibleScheme(uri.Scheme) {
+		info.rmDBOnlyFields()
+	} else {
+		// remove fields only being used by MQ and Storage downstream
+		info.Config.Sink.Protocol = nil
+		info.Config.Sink.Terminator = nil
+	}
+}
+
+func (info *ChangeFeedInfo) rmMQOnlyFields() {
+	log.Info("since the downstream is not a MQ, remove MQ only fields",
+		zap.String("namespace", info.Namespace),
+		zap.String("changefeed", info.ID))
+	info.Config.Sink.DispatchRules = nil
+	info.Config.Sink.SchemaRegistry = nil
+	info.Config.Sink.EncoderConcurrency = nil
+	info.Config.Sink.EnableKafkaSinkV2 = nil
+	info.Config.Sink.OnlyOutputUpdatedColumns = nil
+	info.Config.Sink.DeleteOnlyOutputHandleKeyColumns = nil
+	info.Config.Sink.ContentCompatible = nil
+	info.Config.Sink.KafkaConfig = nil
+}
+
+func (info *ChangeFeedInfo) rmStorageOnlyFields() {
+	info.Config.Sink.CSVConfig = nil
+	info.Config.Sink.DateSeparator = nil
+	info.Config.Sink.EnablePartitionSeparator = nil
+	info.Config.Sink.FileIndexWidth = nil
+	info.Config.Sink.CloudStorageConfig = nil
+}
+
+func (info *ChangeFeedInfo) rmDBOnlyFields() {
+	info.Config.EnableSyncPoint = nil
+	info.Config.BDRMode = nil
+	info.Config.SyncPointInterval = nil
+	info.Config.SyncPointRetention = nil
+	info.Config.Consistent = nil
+	info.Config.Sink.SafeMode = nil
+	info.Config.Sink.MySQLConfig = nil
 }
 
 // FixIncompatible fixes incompatible changefeed meta info.
@@ -316,6 +439,12 @@ func (info *ChangeFeedInfo) FixIncompatible() {
 		log.Info("Fix incompatible memory quota completed", zap.String("changefeed", info.String()))
 	}
 
+	if info.Config.ChangefeedErrorStuckDuration == nil {
+		log.Info("Start fixing incompatible error stuck duration", zap.String("changefeed", info.String()))
+		info.Config.ChangefeedErrorStuckDuration = config.GetDefaultReplicaConfig().ChangefeedErrorStuckDuration
+		log.Info("Fix incompatible error stuck duration completed", zap.String("changefeed", info.String()))
+	}
+
 	log.Info("Start fixing incompatible scheduler", zap.String("changefeed", info.String()))
 	inheritV66 := creatorVersionGate.ChangefeedInheritSchedulerConfigFromV66()
 	info.fixScheduler(inheritV66)
@@ -336,10 +465,10 @@ func (info *ChangeFeedInfo) fixState() {
 		// This corresponds to the case of failure or error.
 		case AdminNone, AdminResume:
 			if info.Error != nil {
-				if cerror.IsChangefeedFastFailErrorCode(errors.RFCErrorCode(info.Error.Code)) {
+				if cerror.IsChangefeedGCFastFailErrorCode(errors.RFCErrorCode(info.Error.Code)) {
 					state = StateFailed
 				} else {
-					state = StateError
+					state = StateWarning
 				}
 			}
 		case AdminStop:
@@ -378,7 +507,7 @@ func (info *ChangeFeedInfo) fixMySQLSinkProtocol() {
 
 	query := uri.Query()
 	protocolStr := query.Get(config.ProtocolKey)
-	if protocolStr != "" || info.Config.Sink.Protocol != "" {
+	if protocolStr != "" || info.Config.Sink.Protocol != nil {
 		maskedSinkURI, _ := util.MaskSinkURI(info.SinkURI)
 		log.Warn("sink URI or sink config contains protocol, but scheme is not mq",
 			zap.String("sinkURI", maskedSinkURI),
@@ -421,43 +550,25 @@ func (info *ChangeFeedInfo) fixMQSinkProtocol() {
 		return
 	}
 
-	if needsFix(info.Config.Sink.Protocol) {
+	if needsFix(util.GetOrZero(info.Config.Sink.Protocol)) {
 		log.Info("handle incompatible protocol from sink config",
-			zap.String("oldProtocol", info.Config.Sink.Protocol),
+			zap.String("oldProtocol", util.GetOrZero(info.Config.Sink.Protocol)),
 			zap.String("fixedProtocol", openProtocol))
-		info.Config.Sink.Protocol = openProtocol
+		info.Config.Sink.Protocol = util.AddressOf(openProtocol)
 	}
 }
 
 func (info *ChangeFeedInfo) updateSinkURIAndConfigProtocol(uri *url.URL, newProtocol string, newQuery url.Values) {
-	oldRawQuery := uri.RawQuery
 	newRawQuery := newQuery.Encode()
+	maskedURI, _ := util.MaskSinkURI(uri.String())
 	log.Info("handle incompatible protocol from sink URI",
-		zap.String("oldUriQuery", oldRawQuery),
-		zap.String("fixedUriQuery", newQuery.Encode()))
+		zap.String("oldURI", maskedURI),
+		zap.String("newProtocol", newProtocol))
 
 	uri.RawQuery = newRawQuery
 	fixedSinkURI := uri.String()
 	info.SinkURI = fixedSinkURI
-	info.Config.Sink.Protocol = newProtocol
-}
-
-// DownstreamType returns the type of the downstream.
-func (info *ChangeFeedInfo) DownstreamType() (DownstreamType, error) {
-	uri, err := url.Parse(info.SinkURI)
-	if err != nil {
-		return Unknown, errors.Trace(err)
-	}
-	if sink.IsMySQLCompatibleScheme(uri.Scheme) {
-		return DB, nil
-	}
-	if sink.IsMQScheme(uri.Scheme) {
-		return MQ, nil
-	}
-	if sink.IsStorageScheme(uri.Scheme) {
-		return Storage, nil
-	}
-	return Unknown, nil
+	info.Config.Sink.Protocol = util.AddressOf(newProtocol)
 }
 
 func (info *ChangeFeedInfo) fixMemoryQuota() {
@@ -468,29 +579,17 @@ func (info *ChangeFeedInfo) fixScheduler(inheritV66 bool) {
 	info.Config.FixScheduler(inheritV66)
 }
 
-// DownstreamType is the type of downstream.
-type DownstreamType int
+// ChangeFeedStatusForAPI uses to transfer the status of changefeed for API.
+type ChangeFeedStatusForAPI struct {
+	ResolvedTs   uint64 `json:"resolved-ts"`
+	CheckpointTs uint64 `json:"checkpoint-ts"`
+}
 
-const (
-	// DB is the type of Database.
-	DB DownstreamType = iota
-	// MQ is the type of MQ or Cloud Storage.
-	MQ
-	// Storage is the type of Cloud Storage.
-	Storage
-	// Unknown is the type of Unknown.
-	Unknown
-)
-
-// String implements fmt.Stringer interface.
-func (t DownstreamType) String() string {
-	switch t {
-	case DB:
-		return "DB"
-	case MQ:
-		return "MQ"
-	case Storage:
-		return "Storage"
-	}
-	return "Unknown"
+// ChangeFeedSyncedStatusForAPI uses to transfer the synced status of changefeed for API.
+type ChangeFeedSyncedStatusForAPI struct {
+	CheckpointTs        uint64 `json:"checkpoint-ts"`
+	LastSyncedTs        uint64 `json:"last-sync-time"`
+	PullerResolvedTs    uint64 `json:"puller-resolved-ts"`
+	SyncedCheckInterval int64  `json:"synced-check-interval"`
+	CheckpointInterval  int64  `json:"checkpoint-interval"`
 }

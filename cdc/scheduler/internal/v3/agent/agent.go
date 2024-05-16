@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/processor/tablepb"
@@ -27,7 +26,7 @@ import (
 	"github.com/pingcap/tiflow/cdc/scheduler/internal/v3/transport"
 	"github.com/pingcap/tiflow/cdc/scheduler/schedulepb"
 	"github.com/pingcap/tiflow/pkg/config"
-	cerror "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/etcd"
 	"github.com/pingcap/tiflow/pkg/p2p"
 	"github.com/pingcap/tiflow/pkg/version"
@@ -90,7 +89,7 @@ func newAgent(
 	captureID model.CaptureID,
 	liveness *model.Liveness,
 	changeFeedID model.ChangeFeedID,
-	etcdClient etcd.CDCEtcdClient,
+	client etcd.OwnerCaptureInfoClient,
 	tableExecutor internal.TableExecutor,
 	changefeedEpoch uint64,
 	cfg *config.SchedulerConfig,
@@ -105,7 +104,7 @@ func newAgent(
 	etcdCliCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	ownerCaptureID, err := etcdClient.GetOwnerID(etcdCliCtx)
+	ownerCaptureID, err := client.GetOwnerID(etcdCliCtx)
 	if err != nil {
 		if err != concurrency.ErrElectionNoLeader {
 			return nil, errors.Trace(err)
@@ -121,7 +120,7 @@ func newAgent(
 		return result, nil
 	}
 	var ownerCaptureInfo *model.CaptureInfo
-	_, captures, err := etcdClient.GetCaptures(ctx)
+	_, captures, err := client.GetCaptures(ctx)
 	for _, captureInfo := range captures {
 		if captureInfo.ID == ownerCaptureID {
 			ownerCaptureInfo = captureInfo
@@ -130,7 +129,6 @@ func newAgent(
 	}
 	if ownerCaptureInfo == nil {
 		log.Info("schedulerv3: no owner found. We will wait for an owner to contact us.",
-			zap.String("ownerCaptureID", ownerCaptureID),
 			zap.String("namespace", changeFeedID.Namespace),
 			zap.String("changefeed", changeFeedID.ID),
 			zap.Error(err))
@@ -146,9 +144,9 @@ func newAgent(
 		zap.String("namespace", changeFeedID.Namespace),
 		zap.String("changefeed", changeFeedID.ID))
 
-	revision, err := etcdClient.GetOwnerRevision(etcdCliCtx, ownerCaptureID)
+	revision, err := client.GetOwnerRevision(etcdCliCtx, ownerCaptureID)
 	if err != nil {
-		if cerror.ErrOwnerNotFound.Equal(err) || cerror.ErrNotOwner.Equal(err) {
+		if errors.ErrOwnerNotFound.Equal(err) || errors.ErrNotOwner.Equal(err) {
 			// These are expected errors when no owner has been elected
 			log.Info("schedulerv3: no owner found when querying for the owner revision",
 				zap.String("ownerCaptureID", ownerCaptureID),
@@ -178,13 +176,13 @@ func NewAgent(ctx context.Context,
 	changeFeedID model.ChangeFeedID,
 	messageServer *p2p.MessageServer,
 	messageRouter p2p.MessageRouter,
-	etcdClient etcd.CDCEtcdClient,
+	ownerInfoClient etcd.OwnerCaptureInfoClient,
 	tableExecutor internal.TableExecutor,
 	changefeedEpoch uint64,
 	cfg *config.SchedulerConfig,
 ) (internal.Agent, error) {
 	result, err := newAgent(
-		ctx, captureID, liveness, changeFeedID, etcdClient, tableExecutor,
+		ctx, captureID, liveness, changeFeedID, ownerInfoClient, tableExecutor,
 		changefeedEpoch, cfg)
 	if err != nil {
 		return nil, errors.Trace(err)
@@ -229,17 +227,15 @@ func (a *agent) handleLivenessUpdate(liveness model.Liveness) {
 		ok := a.liveness.Store(liveness)
 		if ok {
 			log.Info("schedulerv3: agent updates liveness",
+				zap.String("namespace", a.ChangeFeedID.Namespace),
+				zap.String("changefeed", a.ChangeFeedID.ID),
 				zap.String("old", currentLiveness.String()),
 				zap.String("new", liveness.String()))
 		}
 	}
 }
 
-func (a *agent) handleMessage(msg []*schedulepb.Message) (
-	[]*schedulepb.Message, *schedulepb.Barrier,
-) {
-	result := make([]*schedulepb.Message, 0)
-	var barrier *schedulepb.Barrier
+func (a *agent) handleMessage(msg []*schedulepb.Message) (result []*schedulepb.Message, barrier *schedulepb.Barrier) {
 	for _, message := range msg {
 		ownerCaptureID := message.GetFrom()
 		header := message.GetHeader()
@@ -266,16 +262,21 @@ func (a *agent) handleMessage(msg []*schedulepb.Message) (
 				zap.Any("message", message))
 		}
 	}
-	return result, barrier
+	return
 }
 
-func (a *agent) handleMessageHeartbeat(request *schedulepb.Heartbeat) (
-	*schedulepb.Message, *schedulepb.Barrier,
-) {
+func (a *agent) handleMessageHeartbeat(request *schedulepb.Heartbeat) (*schedulepb.Message, *schedulepb.Barrier) {
 	allTables := a.tableM.getAllTableSpans()
 	result := make([]tablepb.TableStatus, 0, allTables.Len())
+
 	allTables.Ascend(func(span tablepb.Span, table *tableSpan) bool {
 		status := table.getTableSpanStatus(request.CollectStats)
+		if status.Checkpoint.CheckpointTs > status.Checkpoint.ResolvedTs {
+			log.Warn("schedulerv3: CheckpointTs is greater than ResolvedTs",
+				zap.String("namespace", a.ChangeFeedID.Namespace),
+				zap.String("changefeed", a.ChangeFeedID.ID),
+				zap.String("span", span.String()))
+		}
 		if table.task != nil && table.task.IsRemove {
 			status.State = tablepb.TableStateStopping
 		}
@@ -319,12 +320,12 @@ const (
 )
 
 type dispatchTableTask struct {
-	Span      tablepb.Span
-	StartTs   model.Ts
-	IsRemove  bool
-	IsPrepare bool
-	Epoch     schedulepb.ProcessorEpoch
-	status    dispatchTableTaskStatus
+	Span       tablepb.Span
+	Checkpoint tablepb.Checkpoint
+	IsRemove   bool
+	IsPrepare  bool
+	Epoch      schedulepb.ProcessorEpoch
+	status     dispatchTableTaskStatus
 }
 
 func (a *agent) handleMessageDispatchTableRequest(
@@ -352,12 +353,12 @@ func (a *agent) handleMessageDispatchTableRequest(
 	case *schedulepb.DispatchTableRequest_AddTable:
 		span := req.AddTable.GetSpan()
 		task = &dispatchTableTask{
-			Span:      span,
-			StartTs:   req.AddTable.GetCheckpoint().CheckpointTs,
-			IsRemove:  false,
-			IsPrepare: req.AddTable.GetIsSecondary(),
-			Epoch:     epoch,
-			status:    dispatchTableTaskReceived,
+			Span:       span,
+			Checkpoint: req.AddTable.GetCheckpoint(),
+			IsRemove:   false,
+			IsPrepare:  req.AddTable.GetIsSecondary(),
+			Epoch:      epoch,
+			status:     dispatchTableTaskReceived,
 		}
 		table = a.tableM.addTableSpan(span)
 	case *schedulepb.DispatchTableRequest_RemoveTable:

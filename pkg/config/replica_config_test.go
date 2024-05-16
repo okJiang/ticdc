@@ -21,7 +21,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/pingcap/tiflow/pkg/compression"
+	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/integrity"
+	"github.com/pingcap/tiflow/pkg/util"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,7 +42,7 @@ func TestReplicaConfigMarshal(t *testing.T) {
 	conf.ForceReplicate = true
 	conf.Filter.Rules = []string{"1.1"}
 	conf.Mounter.WorkerNum = 3
-	conf.Sink.Protocol = "open-protocol"
+	conf.Sink.Protocol = util.AddressOf("canal-json")
 	conf.Sink.ColumnSelectors = []*ColumnSelector{
 		{
 			Matcher: []string{"1.1"},
@@ -47,21 +50,26 @@ func TestReplicaConfigMarshal(t *testing.T) {
 		},
 	}
 	conf.Sink.CSVConfig = &CSVConfig{
-		Delimiter:       ",",
-		Quote:           "\"",
-		NullString:      `\N`,
-		IncludeCommitTs: true,
+		Delimiter:            ",",
+		Quote:                "\"",
+		NullString:           `\N`,
+		IncludeCommitTs:      true,
+		BinaryEncodingMethod: BinaryEncodingBase64,
 	}
-	conf.Sink.Terminator = ""
-	conf.Sink.DateSeparator = "month"
-	conf.Sink.EnablePartitionSeparator = true
-	conf.Sink.EnableKafkaSinkV2 = true
+	conf.Sink.TxnAtomicity = util.AddressOf(unknownTxnAtomicity)
+	conf.Sink.DateSeparator = util.AddressOf("month")
+	conf.Sink.EnablePartitionSeparator = util.AddressOf(true)
+	conf.Sink.EnableKafkaSinkV2 = util.AddressOf(true)
 	conf.Scheduler.EnableTableAcrossNodes = true
 	conf.Scheduler.RegionThreshold = 100001
 	conf.Scheduler.WriteKeyThreshold = 100001
 
 	conf.Sink.OnlyOutputUpdatedColumns = aws.Bool(true)
+	conf.Sink.DeleteOnlyOutputHandleKeyColumns = aws.Bool(true)
+	conf.Sink.ContentCompatible = aws.Bool(true)
 	conf.Sink.SafeMode = aws.Bool(true)
+	conf.Sink.AdvanceTimeoutInSec = util.AddressOf(uint(150))
+	conf.Sink.DebeziumDisableSchema = util.AddressOf(false)
 	conf.Sink.KafkaConfig = &KafkaConfig{
 		PartitionNum:                 aws.Int32(1),
 		ReplicationFactor:            aws.Int16(1),
@@ -95,7 +103,23 @@ func TestReplicaConfigMarshal(t *testing.T) {
 			AvroEnableWatermark:            aws.Bool(true),
 			AvroDecimalHandlingMode:        aws.String("string"),
 			AvroBigintUnsignedHandlingMode: aws.String("string"),
+			EncodingFormat:                 aws.String("json"),
 		},
+		LargeMessageHandle: &LargeMessageHandleConfig{
+			LargeMessageHandleOption: LargeMessageHandleOptionHandleKeyOnly,
+		},
+		GlueSchemaRegistryConfig: &GlueSchemaRegistryConfig{
+			Region:       "region",
+			RegistryName: "registry",
+		},
+	}
+	conf.Sink.PulsarConfig = &PulsarConfig{
+		PulsarVersion:           aws.String("v2.10.0"),
+		AuthenticationToken:     aws.String("token"),
+		TLSTrustCertsFilePath:   aws.String("TLSTrustCertsFilePath_path"),
+		ConnectionTimeout:       NewTimeSec(18),
+		OperationTimeout:        NewTimeSec(8),
+		BatchingMaxPublishDelay: NewTimeMill(5000),
 	}
 	conf.Sink.MySQLConfig = &MySQLConfig{
 		WorkerCount:                  aws.Int(8),
@@ -115,17 +139,26 @@ func TestReplicaConfigMarshal(t *testing.T) {
 		EnableCachePreparedStatement: aws.Bool(true),
 	}
 	conf.Sink.CloudStorageConfig = &CloudStorageConfig{
-		WorkerCount:   aws.Int(8),
-		FlushInterval: aws.String("1m"),
-		FileSize:      aws.Int(1024),
+		WorkerCount:    aws.Int(8),
+		FlushInterval:  aws.String("1m"),
+		FileSize:       aws.Int(1024),
+		OutputColumnID: aws.Bool(false),
+	}
+	conf.Sink.Debezium = &DebeziumConfig{
+		OutputOldValue: true,
+	}
+	conf.Sink.OpenProtocol = &OpenProtocolConfig{
+		OutputOldValue: true,
 	}
 
 	b, err := conf.Marshal()
-	require.Nil(t, err)
-	require.JSONEq(t, testCfgTestReplicaConfigMarshal1, mustIndentJSON(t, b))
+	require.NoError(t, err)
+	b = mustIndentJSON(t, b)
+	require.JSONEq(t, testCfgTestReplicaConfigMarshal1, b)
+
 	conf2 := new(ReplicaConfig)
 	err = conf2.UnmarshalJSON([]byte(testCfgTestReplicaConfigMarshal2))
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Equal(t, conf, conf2)
 }
 
@@ -146,21 +179,19 @@ func TestReplicaConfigOutDated(t *testing.T) {
 	t.Parallel()
 	conf2 := new(ReplicaConfig)
 	err := conf2.UnmarshalJSON([]byte(testCfgTestReplicaConfigOutDated))
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	conf := GetDefaultReplicaConfig()
 	conf.CaseSensitive = false
 	conf.ForceReplicate = true
 	conf.Filter.Rules = []string{"1.1"}
 	conf.Mounter.WorkerNum = 3
-	conf.Sink.Protocol = "open-protocol"
+	conf.Sink.Protocol = util.AddressOf("canal-json")
 	conf.Sink.DispatchRules = []*DispatchRule{
 		{Matcher: []string{"a.b"}, DispatcherRule: "r1"},
 		{Matcher: []string{"a.c"}, DispatcherRule: "r2"},
 		{Matcher: []string{"a.d"}, DispatcherRule: "r2"},
 	}
-	conf.Sink.TxnAtomicity = unknownTxnAtomicity
-	conf.Sink.DateSeparator = ""
 	conf.Sink.CSVConfig = nil
 	require.Equal(t, conf, conf2)
 }
@@ -171,22 +202,14 @@ func TestReplicaConfigValidate(t *testing.T) {
 
 	sinkURL, err := url.Parse("blackhole://")
 	require.NoError(t, err)
-
-	require.Nil(t, conf.ValidateAndAdjust(sinkURL))
-
-	// Incorrect sink configuration.
-	conf = GetDefaultReplicaConfig()
-	conf.Sink.Protocol = "canal"
-	conf.EnableOldValue = false
-	require.Regexp(t, ".*canal protocol requires old value to be enabled.*",
-		conf.ValidateAndAdjust(sinkURL))
+	require.NoError(t, conf.ValidateAndAdjust(sinkURL))
 
 	conf = GetDefaultReplicaConfig()
 	conf.Sink.DispatchRules = []*DispatchRule{
 		{Matcher: []string{"a.b"}, DispatcherRule: "d1", PartitionRule: "r1"},
 	}
-	require.Regexp(t, ".*dispatcher and partition cannot be configured both.*",
-		conf.ValidateAndAdjust(sinkURL))
+	err = conf.ValidateAndAdjust(sinkURL)
+	require.Regexp(t, ".*dispatcher and partition cannot be configured both.*", err)
 
 	// Correct sink configuration.
 	conf = GetDefaultReplicaConfig()
@@ -213,28 +236,51 @@ func TestReplicaConfigValidate(t *testing.T) {
 	err = conf.ValidateAndAdjust(sinkURL)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1024), conf.MemoryQuota)
+
+	conf.Scheduler = &ChangefeedSchedulerConfig{
+		EnableTableAcrossNodes: true,
+		RegionThreshold:        -1,
+	}
+	err = conf.ValidateAndAdjust(sinkURL)
+	require.Error(t, err)
+}
+
+func TestValidateIntegrity(t *testing.T) {
+	sinkURL, err := url.Parse("kafka://topic?protocol=avro")
+	require.NoError(t, err)
+
+	cfg := GetDefaultReplicaConfig()
+	cfg.Integrity.IntegrityCheckLevel = integrity.CheckLevelCorrectness
+	cfg.Sink.ColumnSelectors = []*ColumnSelector{
+		{
+			Matcher: []string{"a.b"}, Columns: []string{"c"},
+		},
+	}
+
+	err = cfg.ValidateAndAdjust(sinkURL)
+	require.ErrorIs(t, err, cerror.ErrInvalidReplicaConfig)
 }
 
 func TestValidateAndAdjust(t *testing.T) {
 	cfg := GetDefaultReplicaConfig()
-	require.False(t, cfg.EnableSyncPoint)
 
+	require.False(t, util.GetOrZero(cfg.EnableSyncPoint))
 	sinkURL, err := url.Parse("blackhole://")
 	require.NoError(t, err)
 
 	require.NoError(t, cfg.ValidateAndAdjust(sinkURL))
 
-	cfg.EnableSyncPoint = true
+	cfg.EnableSyncPoint = util.AddressOf(true)
 	require.NoError(t, cfg.ValidateAndAdjust(sinkURL))
 
-	cfg.SyncPointInterval = time.Second * 29
+	cfg.SyncPointInterval = util.AddressOf(time.Second * 29)
 	require.Error(t, cfg.ValidateAndAdjust(sinkURL))
 
-	cfg.SyncPointInterval = time.Second * 30
-	cfg.SyncPointRetention = time.Minute * 10
+	cfg.SyncPointInterval = util.AddressOf(time.Second * 30)
+	cfg.SyncPointRetention = util.AddressOf(time.Minute * 10)
 	require.Error(t, cfg.ValidateAndAdjust(sinkURL))
 
-	cfg.Sink.EncoderConcurrency = -1
+	cfg.Sink.EncoderConcurrency = util.AddressOf(-1)
 	require.Error(t, cfg.ValidateAndAdjust(sinkURL))
 
 	cfg = GetDefaultReplicaConfig()
@@ -247,6 +293,17 @@ func TestValidateAndAdjust(t *testing.T) {
 	cfg.Integrity.IntegrityCheckLevel = integrity.CheckLevelCorrectness
 	require.NoError(t, cfg.ValidateAndAdjust(sinkURL))
 	require.Equal(t, integrity.CheckLevelNone, cfg.Integrity.IntegrityCheckLevel)
+
+	// changefeed error stuck duration is less than 30 minutes
+	cfg = GetDefaultReplicaConfig()
+	duration := minChangeFeedErrorStuckDuration - time.Second*1
+	cfg.ChangefeedErrorStuckDuration = &duration
+	err = cfg.ValidateAndAdjust(sinkURL)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "The ChangefeedErrorStuckDuration")
+	duration = minChangeFeedErrorStuckDuration
+	cfg.ChangefeedErrorStuckDuration = &duration
+	require.NoError(t, cfg.ValidateAndAdjust(sinkURL))
 }
 
 func TestIsSinkCompatibleWithSpanReplication(t *testing.T) {
@@ -305,4 +362,61 @@ func TestIsSinkCompatibleWithSpanReplication(t *testing.T) {
 		compatible := isSinkCompatibleWithSpanReplication(u)
 		require.Equal(t, compatible, tt.compatible, tt.name)
 	}
+}
+
+func TestValidateAndAdjustLargeMessageHandle(t *testing.T) {
+	cfg := GetDefaultReplicaConfig()
+	cfg.Sink.KafkaConfig = &KafkaConfig{
+		LargeMessageHandle: NewDefaultLargeMessageHandleConfig(),
+	}
+	cfg.Sink.KafkaConfig.LargeMessageHandle.LargeMessageHandleOption = ""
+	cfg.Sink.KafkaConfig.LargeMessageHandle.LargeMessageHandleCompression = ""
+
+	rawURL := "kafka://127.0.0.1:9092/canal-json-test?protocol=canal-json&enable-tidb-extension=true"
+	sinkURL, err := url.Parse(rawURL)
+	require.NoError(t, err)
+
+	err = cfg.ValidateAndAdjust(sinkURL)
+	require.NoError(t, err)
+
+	require.Equal(t, LargeMessageHandleOptionNone, cfg.Sink.KafkaConfig.LargeMessageHandle.LargeMessageHandleOption)
+	require.Equal(t, compression.None, cfg.Sink.KafkaConfig.LargeMessageHandle.LargeMessageHandleCompression)
+}
+
+func TestMaskSensitiveData(t *testing.T) {
+	config := ReplicaConfig{
+		Sink:       nil,
+		Consistent: nil,
+	}
+	config.MaskSensitiveData()
+	require.Nil(t, config.Sink)
+	require.Nil(t, config.Consistent)
+	config.Sink = &SinkConfig{}
+	config.Sink.KafkaConfig = &KafkaConfig{
+		SASLOAuthTokenURL:     aws.String("http://abc.com?password=bacd"),
+		SASLOAuthClientSecret: aws.String("bacd"),
+		SASLPassword:          aws.String("bacd"),
+		SASLGssAPIPassword:    aws.String("bacd"),
+		Key:                   aws.String("bacd"),
+		GlueSchemaRegistryConfig: &GlueSchemaRegistryConfig{
+			AccessKey:       "abc",
+			SecretAccessKey: "def",
+			Token:           "aaa",
+		},
+	}
+	config.Sink.SchemaRegistry = aws.String("http://abc.com?password=bacd")
+	config.Consistent = &ConsistentConfig{
+		Storage: "http://abc.com?password=bacd",
+	}
+	config.MaskSensitiveData()
+	require.Equal(t, "http://abc.com?password=xxxxx", *config.Sink.SchemaRegistry)
+	require.Equal(t, "http://abc.com?password=xxxxx", config.Consistent.Storage)
+	require.Equal(t, "http://abc.com?password=xxxxx", *config.Sink.KafkaConfig.SASLOAuthTokenURL)
+	require.Equal(t, "******", *config.Sink.KafkaConfig.SASLOAuthClientSecret)
+	require.Equal(t, "******", *config.Sink.KafkaConfig.Key)
+	require.Equal(t, "******", *config.Sink.KafkaConfig.SASLPassword)
+	require.Equal(t, "******", *config.Sink.KafkaConfig.SASLGssAPIPassword)
+	require.Equal(t, "******", config.Sink.KafkaConfig.GlueSchemaRegistryConfig.SecretAccessKey)
+	require.Equal(t, "******", config.Sink.KafkaConfig.GlueSchemaRegistryConfig.Token)
+	require.Equal(t, "******", config.Sink.KafkaConfig.GlueSchemaRegistryConfig.AccessKey)
 }

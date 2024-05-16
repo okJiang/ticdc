@@ -25,6 +25,7 @@ import (
 	"github.com/pingcap/tiflow/pkg/config"
 	"github.com/pingcap/tiflow/pkg/etcd"
 	"github.com/pingcap/tiflow/pkg/orchestrator/util"
+	putil "github.com/pingcap/tiflow/pkg/util"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,7 +56,6 @@ func TestChangefeedStateUpdate(t *testing.T) {
     "sort-dir": "",
     "config": {
         "case-sensitive": true,
-        "enable-old-value": false,
         "force-replicate": false,
         "check-gc-safe-point": true,
         "filter": {
@@ -66,14 +66,6 @@ func TestChangefeedStateUpdate(t *testing.T) {
         },
         "mounter": {
             "worker-num": 16
-        },
-        "sink": {
-            "dispatchers": null,
-            "protocol": "open-protocol"
-        },
-        "consistent": {
-            "level": "normal",
-            "storage": "local"
         }
     },
     "state": "normal",
@@ -105,7 +97,7 @@ func TestChangefeedStateUpdate(t *testing.T) {
 			},
 			updateValue: []string{
 				changefeedInfo,
-				`{"resolved-ts":421980720003809281,"checkpoint-ts":421980719742451713,"admin-job-type":0}`,
+				`{"checkpoint-ts":421980719742451713,"admin-job-type":0}`,
 				`{"checkpoint-ts":421980720003809281,"resolved-ts":421980720003809281,"count":0,"error":null}`,
 				`{"id":"6bbc01c8-0605-4f86-a0f9-b3119109b225","address":"127.0.0.1:8300"}`,
 			},
@@ -123,13 +115,33 @@ func TestChangefeedStateUpdate(t *testing.T) {
 						CheckGCSafePoint: true,
 						Filter:           &config.FilterConfig{Rules: []string{"*.*"}},
 						Mounter:          &config.MounterConfig{WorkerNum: 16},
-						Sink:             &config.SinkConfig{Protocol: "open-protocol"},
-						Consistent:       &config.ConsistentConfig{Level: "normal", Storage: "local"},
 						Scheduler:        config.GetDefaultReplicaConfig().Scheduler,
-						Integrity:        config.GetDefaultReplicaConfig().Integrity,
+						Sink: &config.SinkConfig{
+							Terminator:                       putil.AddressOf(config.CRLF),
+							AdvanceTimeoutInSec:              putil.AddressOf(uint(150)),
+							CSVConfig:                        config.GetDefaultReplicaConfig().Sink.CSVConfig,
+							EncoderConcurrency:               config.GetDefaultReplicaConfig().Sink.EncoderConcurrency,
+							DateSeparator:                    config.GetDefaultReplicaConfig().Sink.DateSeparator,
+							EnablePartitionSeparator:         config.GetDefaultReplicaConfig().Sink.EnablePartitionSeparator,
+							EnableKafkaSinkV2:                config.GetDefaultReplicaConfig().Sink.EnableKafkaSinkV2,
+							OnlyOutputUpdatedColumns:         config.GetDefaultReplicaConfig().Sink.OnlyOutputUpdatedColumns,
+							DeleteOnlyOutputHandleKeyColumns: config.GetDefaultReplicaConfig().Sink.DeleteOnlyOutputHandleKeyColumns,
+							ContentCompatible:                config.GetDefaultReplicaConfig().Sink.ContentCompatible,
+							SendBootstrapIntervalInSec:       config.GetDefaultReplicaConfig().Sink.SendBootstrapIntervalInSec,
+							SendBootstrapInMsgCount:          config.GetDefaultReplicaConfig().Sink.SendBootstrapInMsgCount,
+							SendBootstrapToAllPartition:      config.GetDefaultReplicaConfig().Sink.SendBootstrapToAllPartition,
+							DebeziumDisableSchema:            config.GetDefaultReplicaConfig().Sink.DebeziumDisableSchema,
+							Debezium:                         config.GetDefaultReplicaConfig().Sink.Debezium,
+							OpenProtocol:                     config.GetDefaultReplicaConfig().Sink.OpenProtocol,
+						},
+						Consistent: config.GetDefaultReplicaConfig().Consistent,
+						Integrity:  config.GetDefaultReplicaConfig().Integrity,
+						ChangefeedErrorStuckDuration: config.
+							GetDefaultReplicaConfig().ChangefeedErrorStuckDuration,
+						SyncedStatus: config.GetDefaultReplicaConfig().SyncedStatus,
 					},
 				},
-				Status: &model.ChangeFeedStatus{CheckpointTs: 421980719742451713, ResolvedTs: 421980720003809281},
+				Status: &model.ChangeFeedStatus{CheckpointTs: 421980719742451713},
 				TaskPositions: map[model.CaptureID]*model.TaskPosition{
 					"6bbc01c8-0605-4f86-a0f9-b3119109b225": {CheckPointTs: 421980720003809281, ResolvedTs: 421980720003809281},
 				},
@@ -153,7 +165,7 @@ func TestChangefeedStateUpdate(t *testing.T) {
 			},
 			updateValue: []string{
 				changefeedInfo,
-				`{"resolved-ts":421980720003809281,"checkpoint-ts":421980719742451713,"admin-job-type":0}`,
+				`{"checkpoint-ts":421980719742451713,"admin-job-type":0}`,
 				`{"checkpoint-ts":421980720003809281,"resolved-ts":421980720003809281,"count":0,"error":null}`,
 				`{"id":"6bbc01c8-0605-4f86-a0f9-b3119109b225","address":"127.0.0.1:8300"}`,
 				`{"checkpoint-ts":11332244,"resolved-ts":312321,"count":8,"error":null}`,
@@ -173,13 +185,33 @@ func TestChangefeedStateUpdate(t *testing.T) {
 						CheckGCSafePoint: true,
 						Filter:           &config.FilterConfig{Rules: []string{"*.*"}},
 						Mounter:          &config.MounterConfig{WorkerNum: 16},
-						Sink:             &config.SinkConfig{Protocol: "open-protocol"},
-						Consistent:       &config.ConsistentConfig{Level: "normal", Storage: "local"},
-						Scheduler:        config.GetDefaultReplicaConfig().Scheduler,
-						Integrity:        config.GetDefaultReplicaConfig().Integrity,
+						Sink: &config.SinkConfig{
+							Terminator:                       putil.AddressOf(config.CRLF),
+							AdvanceTimeoutInSec:              putil.AddressOf(uint(150)),
+							CSVConfig:                        config.GetDefaultReplicaConfig().Sink.CSVConfig,
+							EncoderConcurrency:               config.GetDefaultReplicaConfig().Sink.EncoderConcurrency,
+							DateSeparator:                    config.GetDefaultReplicaConfig().Sink.DateSeparator,
+							EnablePartitionSeparator:         config.GetDefaultReplicaConfig().Sink.EnablePartitionSeparator,
+							EnableKafkaSinkV2:                config.GetDefaultReplicaConfig().Sink.EnableKafkaSinkV2,
+							OnlyOutputUpdatedColumns:         config.GetDefaultReplicaConfig().Sink.OnlyOutputUpdatedColumns,
+							DeleteOnlyOutputHandleKeyColumns: config.GetDefaultReplicaConfig().Sink.DeleteOnlyOutputHandleKeyColumns,
+							ContentCompatible:                config.GetDefaultReplicaConfig().Sink.ContentCompatible,
+							SendBootstrapIntervalInSec:       config.GetDefaultReplicaConfig().Sink.SendBootstrapIntervalInSec,
+							SendBootstrapInMsgCount:          config.GetDefaultReplicaConfig().Sink.SendBootstrapInMsgCount,
+							SendBootstrapToAllPartition:      config.GetDefaultReplicaConfig().Sink.SendBootstrapToAllPartition,
+							DebeziumDisableSchema:            config.GetDefaultReplicaConfig().Sink.DebeziumDisableSchema,
+							Debezium:                         config.GetDefaultReplicaConfig().Sink.Debezium,
+							OpenProtocol:                     config.GetDefaultReplicaConfig().Sink.OpenProtocol,
+						},
+						Scheduler:  config.GetDefaultReplicaConfig().Scheduler,
+						Integrity:  config.GetDefaultReplicaConfig().Integrity,
+						Consistent: config.GetDefaultReplicaConfig().Consistent,
+						ChangefeedErrorStuckDuration: config.
+							GetDefaultReplicaConfig().ChangefeedErrorStuckDuration,
+						SyncedStatus: config.GetDefaultReplicaConfig().SyncedStatus,
 					},
 				},
-				Status: &model.ChangeFeedStatus{CheckpointTs: 421980719742451713, ResolvedTs: 421980720003809281},
+				Status: &model.ChangeFeedStatus{CheckpointTs: 421980719742451713},
 				TaskPositions: map[model.CaptureID]*model.TaskPosition{
 					"6bbc01c8-0605-4f86-a0f9-b3119109b225": {CheckPointTs: 421980720003809281, ResolvedTs: 421980720003809281},
 					"666777888":                            {CheckPointTs: 11332244, ResolvedTs: 312321, Count: 8},
@@ -207,7 +239,7 @@ func TestChangefeedStateUpdate(t *testing.T) {
 			},
 			updateValue: []string{
 				changefeedInfo,
-				`{"resolved-ts":421980720003809281,"checkpoint-ts":421980719742451713,"admin-job-type":0}`,
+				`{"checkpoint-ts":421980719742451713,"admin-job-type":0}`,
 				`{"checkpoint-ts":421980720003809281,"resolved-ts":421980720003809281,"count":0,"error":null}`,
 				`{"id":"6bbc01c8-0605-4f86-a0f9-b3119109b225","address":"127.0.0.1:8300"}`,
 				`fake value`,
@@ -228,13 +260,33 @@ func TestChangefeedStateUpdate(t *testing.T) {
 						CheckGCSafePoint: true,
 						Filter:           &config.FilterConfig{Rules: []string{"*.*"}},
 						Mounter:          &config.MounterConfig{WorkerNum: 16},
-						Sink:             &config.SinkConfig{Protocol: "open-protocol"},
-						Consistent:       &config.ConsistentConfig{Level: "normal", Storage: "local"},
-						Scheduler:        config.GetDefaultReplicaConfig().Scheduler,
-						Integrity:        config.GetDefaultReplicaConfig().Integrity,
+						Sink: &config.SinkConfig{
+							Terminator:                       putil.AddressOf(config.CRLF),
+							AdvanceTimeoutInSec:              putil.AddressOf(uint(150)),
+							EncoderConcurrency:               config.GetDefaultReplicaConfig().Sink.EncoderConcurrency,
+							CSVConfig:                        config.GetDefaultReplicaConfig().Sink.CSVConfig,
+							DateSeparator:                    config.GetDefaultReplicaConfig().Sink.DateSeparator,
+							EnablePartitionSeparator:         config.GetDefaultReplicaConfig().Sink.EnablePartitionSeparator,
+							EnableKafkaSinkV2:                config.GetDefaultReplicaConfig().Sink.EnableKafkaSinkV2,
+							OnlyOutputUpdatedColumns:         config.GetDefaultReplicaConfig().Sink.OnlyOutputUpdatedColumns,
+							DeleteOnlyOutputHandleKeyColumns: config.GetDefaultReplicaConfig().Sink.DeleteOnlyOutputHandleKeyColumns,
+							ContentCompatible:                config.GetDefaultReplicaConfig().Sink.ContentCompatible,
+							SendBootstrapIntervalInSec:       config.GetDefaultReplicaConfig().Sink.SendBootstrapIntervalInSec,
+							SendBootstrapInMsgCount:          config.GetDefaultReplicaConfig().Sink.SendBootstrapInMsgCount,
+							SendBootstrapToAllPartition:      config.GetDefaultReplicaConfig().Sink.SendBootstrapToAllPartition,
+							DebeziumDisableSchema:            config.GetDefaultReplicaConfig().Sink.DebeziumDisableSchema,
+							Debezium:                         config.GetDefaultReplicaConfig().Sink.Debezium,
+							OpenProtocol:                     config.GetDefaultReplicaConfig().Sink.OpenProtocol,
+						},
+						Consistent: config.GetDefaultReplicaConfig().Consistent,
+						Scheduler:  config.GetDefaultReplicaConfig().Scheduler,
+						Integrity:  config.GetDefaultReplicaConfig().Integrity,
+						ChangefeedErrorStuckDuration: config.
+							GetDefaultReplicaConfig().ChangefeedErrorStuckDuration,
+						SyncedStatus: config.GetDefaultReplicaConfig().SyncedStatus,
 					},
 				},
-				Status: &model.ChangeFeedStatus{CheckpointTs: 421980719742451713, ResolvedTs: 421980720003809281},
+				Status: &model.ChangeFeedStatus{CheckpointTs: 421980719742451713},
 				TaskPositions: map[model.CaptureID]*model.TaskPosition{
 					"6bbc01c8-0605-4f86-a0f9-b3119109b225": {CheckPointTs: 421980720003809281, ResolvedTs: 421980720003809281},
 				},
@@ -297,7 +349,10 @@ func TestChangefeedStateUpdate(t *testing.T) {
 			err = state.Update(util.NewEtcdKey(k), value, false)
 			require.Nil(t, err)
 		}
-		require.True(t, cmp.Equal(state, &tc.expected, cmpopts.IgnoreUnexported(ChangefeedReactorState{})),
+		require.True(t, cmp.Equal(
+			state, &tc.expected,
+			cmpopts.IgnoreUnexported(ChangefeedReactorState{}),
+		),
 			fmt.Sprintf("%d,%s", i, cmp.Diff(state, &tc.expected, cmpopts.IgnoreUnexported(ChangefeedReactorState{}))))
 	}
 }
@@ -312,36 +367,46 @@ func TestPatchInfo(t *testing.T) {
 	})
 	stateTester.MustApplyPatches()
 	defaultConfig := config.GetDefaultReplicaConfig()
-	require.Equal(t, state.Info, &model.ChangeFeedInfo{
+	cfInfo := &model.ChangeFeedInfo{
 		SinkURI: "123",
 		Engine:  model.SortUnified,
 		Config: &config.ReplicaConfig{
-			Filter:     defaultConfig.Filter,
-			Mounter:    defaultConfig.Mounter,
-			Sink:       defaultConfig.Sink,
-			Consistent: defaultConfig.Consistent,
-			Scheduler:  defaultConfig.Scheduler,
-			Integrity:  defaultConfig.Integrity,
+			Filter:                       defaultConfig.Filter,
+			Mounter:                      defaultConfig.Mounter,
+			Sink:                         defaultConfig.Sink,
+			Consistent:                   defaultConfig.Consistent,
+			Scheduler:                    defaultConfig.Scheduler,
+			Integrity:                    defaultConfig.Integrity,
+			ChangefeedErrorStuckDuration: defaultConfig.ChangefeedErrorStuckDuration,
+			SyncedStatus:                 defaultConfig.SyncedStatus,
 		},
-	})
+	}
+	cfInfo.RmUnusedFields()
+	require.Equal(t, state.Info, cfInfo)
+
 	state.PatchInfo(func(info *model.ChangeFeedInfo) (*model.ChangeFeedInfo, bool, error) {
 		info.StartTs = 6
 		return info, true, nil
 	})
 	stateTester.MustApplyPatches()
-	require.Equal(t, state.Info, &model.ChangeFeedInfo{
+	cfInfo = &model.ChangeFeedInfo{
 		SinkURI: "123",
 		StartTs: 6,
 		Engine:  model.SortUnified,
 		Config: &config.ReplicaConfig{
-			Filter:     defaultConfig.Filter,
-			Mounter:    defaultConfig.Mounter,
-			Sink:       defaultConfig.Sink,
-			Consistent: defaultConfig.Consistent,
-			Scheduler:  defaultConfig.Scheduler,
-			Integrity:  defaultConfig.Integrity,
+			Filter:                       defaultConfig.Filter,
+			Mounter:                      defaultConfig.Mounter,
+			Sink:                         defaultConfig.Sink,
+			Consistent:                   defaultConfig.Consistent,
+			Scheduler:                    defaultConfig.Scheduler,
+			Integrity:                    defaultConfig.Integrity,
+			ChangefeedErrorStuckDuration: defaultConfig.ChangefeedErrorStuckDuration,
+			SyncedStatus:                 defaultConfig.SyncedStatus,
 		},
-	})
+	}
+	cfInfo.RmUnusedFields()
+	require.Equal(t, state.Info, cfInfo)
+
 	state.PatchInfo(func(info *model.ChangeFeedInfo) (*model.ChangeFeedInfo, bool, error) {
 		return nil, true, nil
 	})
@@ -360,11 +425,11 @@ func TestPatchStatus(t *testing.T) {
 	stateTester.MustApplyPatches()
 	require.Equal(t, state.Status, &model.ChangeFeedStatus{CheckpointTs: 5})
 	state.PatchStatus(func(status *model.ChangeFeedStatus) (*model.ChangeFeedStatus, bool, error) {
-		status.ResolvedTs = 6
+		status.CheckpointTs = 6
 		return status, true, nil
 	})
 	stateTester.MustApplyPatches()
-	require.Equal(t, state.Status, &model.ChangeFeedStatus{CheckpointTs: 5, ResolvedTs: 6})
+	require.Equal(t, state.Status, &model.ChangeFeedStatus{CheckpointTs: 6})
 	state.PatchStatus(func(status *model.ChangeFeedStatus) (*model.ChangeFeedStatus, bool, error) {
 		return nil, true, nil
 	})
@@ -437,10 +502,13 @@ func TestPatchTaskPosition(t *testing.T) {
 }
 
 func TestGlobalStateUpdate(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		updateKey   []string
 		updateValue []string
 		expected    GlobalReactorState
+		timeout     int
 	}{
 		{ // common case
 			updateKey: []string{
@@ -522,13 +590,14 @@ func TestGlobalStateUpdate(t *testing.T) {
 				`55551111`,
 				`{"id":"6bbc01c8-0605-4f86-a0f9-b3119109b225","address":"127.0.0.1:8300"}`,
 				`{"resolved-ts":421980720003809281,"checkpoint-ts":421980719742451713,
-"admin-job-type":0}`,
+		"admin-job-type":0}`,
 				`{"resolved-ts":421980720003809281,"checkpoint-ts":421980719742451713,
-"admin-job-type":0}`,
+		"admin-job-type":0}`,
 				``,
 				``,
 				``,
 			},
+			timeout: 6,
 			expected: GlobalReactorState{
 				ClusterID: etcd.DefaultCDCClusterID,
 				Owner:     map[string]struct{}{"22317526c4fc9a38": {}},
@@ -550,7 +619,7 @@ func TestGlobalStateUpdate(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		state := NewGlobalState(etcd.DefaultCDCClusterID)
+		state := NewGlobalState(etcd.DefaultCDCClusterID, 10)
 		for i, k := range tc.updateKey {
 			value := []byte(tc.updateValue[i])
 			if len(value) == 0 {
@@ -559,13 +628,17 @@ func TestGlobalStateUpdate(t *testing.T) {
 			err := state.Update(util.NewEtcdKey(k), value, false)
 			require.Nil(t, err)
 		}
+		time.Sleep(time.Duration(tc.timeout) * time.Second)
+		state.UpdatePendingChange()
 		require.True(t, cmp.Equal(state, &tc.expected, cmpopts.IgnoreUnexported(GlobalReactorState{}, ChangefeedReactorState{})),
 			cmp.Diff(state, &tc.expected, cmpopts.IgnoreUnexported(GlobalReactorState{}, ChangefeedReactorState{})))
 	}
 }
 
 func TestCaptureChangeHooks(t *testing.T) {
-	state := NewGlobalState(etcd.DefaultCDCClusterID)
+	t.Parallel()
+
+	state := NewGlobalState(etcd.DefaultCDCClusterID, 10)
 
 	var callCount int
 	state.onCaptureAdded = func(captureID model.CaptureID, addr string) {
@@ -589,13 +662,18 @@ func TestCaptureChangeHooks(t *testing.T) {
 		etcd.CaptureInfoKeyPrefix(etcd.DefaultCDCClusterID)+"/capture-1"),
 		captureInfoBytes, false)
 	require.Nil(t, err)
-	require.Equal(t, callCount, 1)
+	require.Eventually(t, func() bool {
+		return callCount == 1
+	}, time.Second*3, 10*time.Millisecond)
 
 	err = state.Update(util.NewEtcdKey(
 		etcd.CaptureInfoKeyPrefix(etcd.DefaultCDCClusterID)+"/capture-1"),
 		nil /* delete */, false)
 	require.Nil(t, err)
-	require.Equal(t, callCount, 2)
+	require.Eventually(t, func() bool {
+		state.UpdatePendingChange()
+		return callCount == 2
+	}, time.Second*10, 10*time.Millisecond)
 }
 
 func TestCheckChangefeedNormal(t *testing.T) {
@@ -608,29 +686,29 @@ func TestCheckChangefeedNormal(t *testing.T) {
 		return &model.ChangeFeedInfo{SinkURI: "123", AdminJobType: model.AdminNone, Config: &config.ReplicaConfig{}}, true, nil
 	})
 	state.PatchStatus(func(status *model.ChangeFeedStatus) (*model.ChangeFeedStatus, bool, error) {
-		return &model.ChangeFeedStatus{ResolvedTs: 1, AdminJobType: model.AdminNone}, true, nil
+		return &model.ChangeFeedStatus{CheckpointTs: 1, AdminJobType: model.AdminNone}, true, nil
 	})
 	state.CheckChangefeedNormal()
 	stateTester.MustApplyPatches()
-	require.Equal(t, state.Status.ResolvedTs, uint64(1))
+	require.Equal(t, state.Status.CheckpointTs, uint64(1))
 
 	state.PatchInfo(func(info *model.ChangeFeedInfo) (*model.ChangeFeedInfo, bool, error) {
 		info.AdminJobType = model.AdminStop
 		return info, true, nil
 	})
 	state.PatchStatus(func(status *model.ChangeFeedStatus) (*model.ChangeFeedStatus, bool, error) {
-		status.ResolvedTs = 2
+		status.CheckpointTs = 2
 		return status, true, nil
 	})
 	state.CheckChangefeedNormal()
 	stateTester.MustApplyPatches()
-	require.Equal(t, state.Status.ResolvedTs, uint64(1))
+	require.Equal(t, state.Status.CheckpointTs, uint64(1))
 
 	state.PatchStatus(func(status *model.ChangeFeedStatus) (*model.ChangeFeedStatus, bool, error) {
-		status.ResolvedTs = 2
+		status.CheckpointTs = 2
 		return status, true, nil
 	})
 	state.CheckChangefeedNormal()
 	stateTester.MustApplyPatches()
-	require.Equal(t, state.Status.ResolvedTs, uint64(2))
+	require.Equal(t, state.Status.CheckpointTs, uint64(2))
 }

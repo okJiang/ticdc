@@ -18,10 +18,10 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/pingcap/tidb/parser/charset"
-	timodel "github.com/pingcap/tidb/parser/model"
-	"github.com/pingcap/tidb/parser/mysql"
-	"github.com/pingcap/tidb/types"
+	"github.com/pingcap/tidb/pkg/parser/charset"
+	timodel "github.com/pingcap/tidb/pkg/parser/model"
+	"github.com/pingcap/tidb/pkg/parser/mysql"
+	"github.com/pingcap/tidb/pkg/types"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/stretchr/testify/require"
 )
@@ -30,22 +30,38 @@ func generateTableDef() (TableDefinition, *model.TableInfo) {
 	var columns []*timodel.ColumnInfo
 	ft := types.NewFieldType(mysql.TypeLong)
 	ft.SetFlag(mysql.PriKeyFlag | mysql.NotNullFlag)
-	col := &timodel.ColumnInfo{Name: timodel.NewCIStr("Id"), FieldType: *ft}
+	col := &timodel.ColumnInfo{
+		Name:         timodel.NewCIStr("Id"),
+		FieldType:    *ft,
+		DefaultValue: 10,
+	}
 	columns = append(columns, col)
 
 	ft = types.NewFieldType(mysql.TypeVarchar)
 	ft.SetFlag(mysql.NotNullFlag)
 	ft.SetFlen(128)
-	col = &timodel.ColumnInfo{Name: timodel.NewCIStr("LastName"), FieldType: *ft}
+	col = &timodel.ColumnInfo{
+		Name:         timodel.NewCIStr("LastName"),
+		FieldType:    *ft,
+		DefaultValue: "Default LastName",
+	}
 	columns = append(columns, col)
 
 	ft = types.NewFieldType(mysql.TypeVarchar)
 	ft.SetFlen(64)
-	col = &timodel.ColumnInfo{Name: timodel.NewCIStr("FirstName"), FieldType: *ft}
+	col = &timodel.ColumnInfo{
+		Name:         timodel.NewCIStr("FirstName"),
+		FieldType:    *ft,
+		DefaultValue: "Default FirstName",
+	}
 	columns = append(columns, col)
 
 	ft = types.NewFieldType(mysql.TypeDatetime)
-	col = &timodel.ColumnInfo{Name: timodel.NewCIStr("Birthday"), FieldType: *ft}
+	col = &timodel.ColumnInfo{
+		Name:         timodel.NewCIStr("Birthday"),
+		FieldType:    *ft,
+		DefaultValue: 12345678,
+	}
 	columns = append(columns, col)
 
 	tableInfo := &model.TableInfo{
@@ -59,7 +75,7 @@ func generateTableDef() (TableDefinition, *model.TableInfo) {
 	}
 
 	var def TableDefinition
-	def.FromTableInfo(tableInfo, tableInfo.Version)
+	def.FromTableInfo(tableInfo, tableInfo.Version, false)
 	return def, tableInfo
 }
 
@@ -352,12 +368,12 @@ func TestTableCol(t *testing.T) {
 		}
 		col := &timodel.ColumnInfo{FieldType: *ft}
 		var tableCol TableCol
-		tableCol.FromTiColumnInfo(col)
+		tableCol.FromTiColumnInfo(col, false)
 		encodedCol, err := json.Marshal(tableCol)
 		require.Nil(t, err, tc.name)
 		require.JSONEq(t, tc.expected, string(encodedCol), tc.name)
 
-		_, err = tableCol.ToTiColumnInfo()
+		_, err = tableCol.ToTiColumnInfo(100)
 		require.NoError(t, err)
 	}
 }
@@ -380,22 +396,26 @@ func TestTableDefinition(t *testing.T) {
 				"ColumnName": "Id",
 				"ColumnType": "INT",
 				"ColumnPrecision": "11",
+				"ColumnDefault":10,
 				"ColumnNullable": "false",
 				"ColumnIsPk": "true"
 			},
 			{
 				"ColumnName": "LastName",
 				"ColumnType": "VARCHAR",
+				"ColumnDefault":"Default LastName",
 				"ColumnPrecision": "128",
 				"ColumnNullable": "false"
 			},
 			{
 				"ColumnName": "FirstName",
+				"ColumnDefault":"Default FirstName",
 				"ColumnType": "VARCHAR",
 				"ColumnPrecision": "64"
 			},
 			{
 				"ColumnName": "Birthday",
+				"ColumnDefault":1.2345678e+07,
 				"ColumnType": "DATETIME"
 			}
 		],
@@ -409,7 +429,7 @@ func TestTableDefinition(t *testing.T) {
 		Query:     "alter table schema1.table1 add Birthday date",
 		TableInfo: tableInfo,
 	}
-	def.FromDDLEvent(event)
+	def.FromDDLEvent(event, false)
 	encodedDef, err = json.MarshalIndent(def, "", "    ")
 	require.NoError(t, err)
 	require.JSONEq(t, `{
@@ -424,22 +444,26 @@ func TestTableDefinition(t *testing.T) {
 				"ColumnName": "Id",
 				"ColumnType": "INT",
 				"ColumnPrecision": "11",
+				"ColumnDefault":10,
 				"ColumnNullable": "false",
 				"ColumnIsPk": "true"
 			},
 			{
 				"ColumnName": "LastName",
 				"ColumnType": "VARCHAR",
+				"ColumnDefault":"Default LastName",
 				"ColumnPrecision": "128",
 				"ColumnNullable": "false"
 			},
 			{
 				"ColumnName": "FirstName",
+				"ColumnDefault":"Default FirstName",
 				"ColumnType": "VARCHAR",
 				"ColumnPrecision": "64"
 			},
 			{
 				"ColumnName": "Birthday",
+				"ColumnDefault":1.2345678e+07,
 				"ColumnType": "DATETIME"
 			}
 		],
@@ -471,7 +495,7 @@ func TestTableDefinitionGenFilePath(t *testing.T) {
 	def, _ := generateTableDef()
 	tablePath, err := def.GenerateSchemaFilePath()
 	require.NoError(t, err)
-	require.Equal(t, "schema1/table1/meta/schema_100_0785427252.json", tablePath)
+	require.Equal(t, "schema1/table1/meta/schema_100_3752767265.json", tablePath)
 }
 
 func TestTableDefinitionSum32(t *testing.T) {

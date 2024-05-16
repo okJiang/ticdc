@@ -15,10 +15,6 @@
 # download-integration-test-binaries.sh will
 # * download all the binaries you need for integration testing
 
-# Notice:
-# Please don't try the script locally,
-# it downloads files for linux platform. We only use it in docker-compose.
-
 set -o errexit
 set -o pipefail
 
@@ -31,7 +27,7 @@ branch=${1:-master}
 # binaries.
 community=${2:-false}
 # Specify which version of the community binaries that will be utilized.
-ver=${3:-v6.5.2}
+ver=${3:-v8.1.0}
 # Specify which os that will be used to pack the binaries.
 os=${4:-linux}
 # Specify which architecture that will be used to pack the binaries.
@@ -54,7 +50,7 @@ function download() {
 	fi
 	echo ">>>"
 	echo "download ${file_name} from ${url}"
-	curl --retry 3 --retry-delay 1 -o "${file_path}" "${url}"
+	wget --no-verbose --retry-connrefused --waitretry=1 -t 3 -O "${file_path}" "${url}"
 }
 
 # download_community_version will try to download required binaries from the
@@ -94,19 +90,20 @@ function download_community_binaries() {
 		rm -rf third_bin/$toolkit_file_name
 
 	# ycsb
-	local ycsb_file_name="go-ycsb-${dist}"
+	local ycsb_file_name="go-ycsb-${os}-${arch}"
 	local ycsb_tar_name="${ycsb_file_name}.tar.gz"
-	local ycsb_url="https://github.com/pingcap/go-ycsb/releases/download/v1.0.0/go-ycsb-linux-amd64.tar.gz"
-	download "$ycsb_url" "ycsb_file_name" "tmp/$ycsb_tar_name"
+	local ycsb_url="https://github.com/pingcap/go-ycsb/releases/download/v1.0.0/${ycsb_tar_name}"
+	wget -O "tmp/$ycsb_tar_name" "$ycsb_url"
 	tar -xz -C third_bin -f tmp/$ycsb_tar_name
 
 	# minio
-	local minio_url="https://dl.min.io/server/minio/release/linux-amd64/minio"
+	local minio_url="https://dl.min.io/server/minio/release/${os}-${arch}/minio"
 	download "$minio_url" "minio" "third_bin/minio"
 
 	# jq
-	local jq_url="https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64"
-	download "$jq_url" "jq" "third_bin/jq"
+	local os_name=$([ "$os" == "darwin" ] && echo -n "macos" || echo -n "$os")
+	local jq_url="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-${os_name}-${arch}"
+	wget -O third_bin/jq "$jq_url"
 
 	chmod a+x third_bin/*
 }
@@ -130,19 +127,24 @@ function download_binaries() {
 	minio_download_url="${file_server_url}/download/minio.tar.gz"
 	go_ycsb_download_url="${file_server_url}/download/builds/pingcap/go-ycsb/test-br/go-ycsb"
 	etcd_download_url="${file_server_url}/download/builds/pingcap/cdc/etcd-v3.4.7-linux-amd64.tar.gz"
-	sync_diff_inspector_url="${file_server_url}/download/builds/pingcap/cdc/sync_diff_inspector_hash-00998a9a_linux-amd64.tar.gz"
+	sync_diff_inspector_url="${file_server_url}/download/builds/pingcap/cdc/sync_diff_inspector_hash-79f1fd1e_linux-amd64.tar.gz"
 	jq_download_url="${file_server_url}/download/builds/pingcap/test/jq-1.6/jq-linux64"
+	schema_registry_url="${file_server_url}/download/builds/pingcap/cdc/schema-registry.tar.gz"
 
 	download "$tidb_download_url" "tidb-server.tar.gz" "tmp/tidb-server.tar.gz"
 	tar -xz -C third_bin bin/tidb-server -f tmp/tidb-server.tar.gz && mv third_bin/bin/tidb-server third_bin/
+
 	download "$pd_download_url" "pd-server.tar.gz" "tmp/pd-server.tar.gz"
 	tar -xz -C third_bin 'bin/*' -f tmp/pd-server.tar.gz && mv third_bin/bin/* third_bin/
+
 	download "$tikv_download_url" "tikv-server.tar.gz" "tmp/tikv-server.tar.gz"
 	tar -xz -C third_bin bin/tikv-server -f tmp/tikv-server.tar.gz && mv third_bin/bin/tikv-server third_bin/
+
 	download "$tiflash_download_url" "tiflash.tar.gz" "tmp/tiflash.tar.gz"
 	tar -xz -C third_bin -f tmp/tiflash.tar.gz
 	mv third_bin/tiflash third_bin/_tiflash
 	mv third_bin/_tiflash/* third_bin && rm -rf third_bin/_tiflash
+
 	download "$minio_download_url" "minio.tar.gz" "tmp/minio.tar.gz"
 	tar -xz -C third_bin -f tmp/minio.tar.gz
 
@@ -151,8 +153,14 @@ function download_binaries() {
 	download "$etcd_download_url" "etcd.tar.gz" "tmp/etcd.tar.gz"
 	tar -xz -C third_bin etcd-v3.4.7-linux-amd64/etcdctl -f tmp/etcd.tar.gz
 	mv third_bin/etcd-v3.4.7-linux-amd64/etcdctl third_bin/ && rm -rf third_bin/etcd-v3.4.7-linux-amd64
+
 	download "$sync_diff_inspector_url" "sync_diff_inspector.tar.gz" "tmp/sync_diff_inspector.tar.gz"
 	tar -xz -C third_bin -f tmp/sync_diff_inspector.tar.gz
+
+	download "$schema_registry_url" "schema-registry.tar.gz" "tmp/schema-registry.tar.gz"
+	tar -xz -C third_bin -f tmp/schema-registry.tar.gz
+	mv third_bin/schema-registry third_bin/_schema_registry
+	mv third_bin/_schema_registry/* third_bin && rm -rf third_bin/_schema_registry
 
 	chmod a+x third_bin/*
 }

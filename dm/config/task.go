@@ -28,16 +28,16 @@ import (
 	"github.com/coreos/go-semver/semver"
 	"github.com/docker/go-units"
 	"github.com/dustin/go-humanize"
-	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
 	"github.com/pingcap/tidb-tools/pkg/column-mapping"
-	"github.com/pingcap/tidb/br/pkg/lightning/config"
-	"github.com/pingcap/tidb/parser"
-	"github.com/pingcap/tidb/util/filter"
-	router "github.com/pingcap/tidb/util/table-router"
+	"github.com/pingcap/tidb/pkg/lightning/config"
+	"github.com/pingcap/tidb/pkg/parser"
+	"github.com/pingcap/tidb/pkg/util/filter"
+	router "github.com/pingcap/tidb/pkg/util/table-router"
 	"github.com/pingcap/tiflow/dm/config/dbconfig"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
+	bf "github.com/pingcap/tiflow/pkg/binlog-filter"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
@@ -341,9 +341,6 @@ func (m *LoaderConfig) adjust() error {
 		m.PoolSize = defaultPoolSize
 	}
 
-	if m.OnDuplicateLogical == "" && m.OnDuplicate != "" {
-		m.OnDuplicateLogical = m.OnDuplicate
-	}
 	if m.OnDuplicateLogical == "" {
 		m.OnDuplicateLogical = OnDuplicateReplace
 	}
@@ -489,10 +486,11 @@ func defaultValidatorConfig() ValidatorConfig {
 type TaskConfig struct {
 	*flag.FlagSet `yaml:"-" toml:"-" json:"-"`
 
-	Name       string `yaml:"name" toml:"name" json:"name"`
-	TaskMode   string `yaml:"task-mode" toml:"task-mode" json:"task-mode"`
-	IsSharding bool   `yaml:"is-sharding" toml:"is-sharding" json:"is-sharding"`
-	ShardMode  string `yaml:"shard-mode" toml:"shard-mode" json:"shard-mode"` // when `shard-mode` set, we always enable sharding support.
+	Name                      string `yaml:"name" toml:"name" json:"name"`
+	TaskMode                  string `yaml:"task-mode" toml:"task-mode" json:"task-mode"`
+	IsSharding                bool   `yaml:"is-sharding" toml:"is-sharding" json:"is-sharding"`
+	ShardMode                 string `yaml:"shard-mode" toml:"shard-mode" json:"shard-mode"` // when `shard-mode` set, we always enable sharding support.
+	StrictOptimisticShardMode bool   `yaml:"strict-optimistic-shard-mode" toml:"strict-optimistic-shard-mode" json:"strict-optimistic-shard-mode"`
 	// treat it as hidden configuration
 	IgnoreCheckingItems []string `yaml:"ignore-checking-items" toml:"ignore-checking-items" json:"ignore-checking-items"`
 	// we store detail status in meta
@@ -616,8 +614,8 @@ func (c *TaskConfig) DecodeFile(fpath string) error {
 	return c.adjust()
 }
 
-// Decode loads config from file data.
-func (c *TaskConfig) Decode(data string) error {
+// FromYaml loads config from file data.
+func (c *TaskConfig) FromYaml(data string) error {
 	err := yaml.UnmarshalStrict([]byte(data), c)
 	if err != nil {
 		return terror.ErrConfigYamlTransform.Delegate(err, "decode task config failed")
@@ -656,7 +654,9 @@ func (c *TaskConfig) adjust() error {
 	if len(c.Name) == 0 {
 		return terror.ErrConfigNeedUniqueTaskName.Generate()
 	}
-	if c.TaskMode != ModeFull && c.TaskMode != ModeIncrement && c.TaskMode != ModeAll {
+	switch c.TaskMode {
+	case ModeFull, ModeIncrement, ModeAll, ModeDump, ModeLoadSync:
+	default:
 		return terror.ErrConfigInvalidTaskMode.Generate()
 	}
 	if c.MetaSchema == "" {
@@ -667,6 +667,9 @@ func (c *TaskConfig) adjust() error {
 		return terror.ErrConfigShardModeNotSupport.Generate(c.ShardMode)
 	} else if c.ShardMode == "" && c.IsSharding {
 		c.ShardMode = ShardPessimistic // use the pessimistic mode as default for back compatible.
+	}
+	if c.StrictOptimisticShardMode && c.ShardMode != ShardOptimistic {
+		return terror.ErrConfigStrictOptimisticShardMode.Generate()
 	}
 
 	if len(c.ColumnMappings) > 0 {
@@ -757,7 +760,7 @@ func (c *TaskConfig) adjust() error {
 		instanceIDs[inst.SourceID] = i
 
 		switch c.TaskMode {
-		case ModeFull, ModeAll:
+		case ModeFull, ModeAll, ModeDump:
 			if inst.Meta != nil {
 				log.L().Warn("metadata will not be used. for Full mode, incremental sync will never occur; for All mode, the meta dumped by MyDumper will be used", zap.Int("mysql instance", i), zap.String("task mode", c.TaskMode))
 			}
@@ -818,7 +821,7 @@ func (c *TaskConfig) adjust() error {
 			inst.Mydumper.Threads = inst.MydumperThread
 		}
 
-		if (c.TaskMode == ModeFull || c.TaskMode == ModeAll) && len(inst.Mydumper.MydumperPath) == 0 {
+		if HasDump(c.TaskMode) && len(inst.Mydumper.MydumperPath) == 0 {
 			// only verify if set, whether is valid can only be verify when we run it
 			return terror.ErrConfigMydumperPathNotValid.Generate(i)
 		}
@@ -1059,12 +1062,8 @@ func checkValidExpr(expr string) error {
 func (c *TaskConfig) YamlForDowngrade() (string, error) {
 	t := NewTaskConfigForDowngrade(c)
 
-	// encrypt password
-	cipher, err := utils.Encrypt(utils.DecryptOrPlaintext(t.TargetDB.Password))
-	if err != nil {
-		return "", err
-	}
-	t.TargetDB.Password = cipher
+	// try to encrypt password
+	t.TargetDB.Password = utils.EncryptOrPlaintext(utils.DecryptOrPlaintext(t.TargetDB.Password))
 
 	// omit default values, so we can ignore them for later marshal
 	t.omitDefaultVals()
@@ -1223,45 +1222,48 @@ type TaskConfigForDowngrade struct {
 	EnableANSIQuotes        bool                                 `yaml:"ansi-quotes"`
 	RemoveMeta              bool                                 `yaml:"remove-meta"`
 	// new config item
-	MySQLInstances   []*MySQLInstanceForDowngrade `yaml:"mysql-instances"`
-	ExprFilter       map[string]*ExpressionFilter `yaml:"expression-filter,omitempty"`
-	OnlineDDL        bool                         `yaml:"online-ddl,omitempty"`
-	ShadowTableRules []string                     `yaml:"shadow-table-rules,omitempty"`
-	TrashTableRules  []string                     `yaml:"trash-table-rules,omitempty"`
+	MySQLInstances            []*MySQLInstanceForDowngrade `yaml:"mysql-instances"`
+	ExprFilter                map[string]*ExpressionFilter `yaml:"expression-filter,omitempty"`
+	OnlineDDL                 bool                         `yaml:"online-ddl,omitempty"`
+	ShadowTableRules          []string                     `yaml:"shadow-table-rules,omitempty"`
+	TrashTableRules           []string                     `yaml:"trash-table-rules,omitempty"`
+	StrictOptimisticShardMode bool                         `yaml:"strict-optimistic-shard-mode,omitempty"`
 }
 
 // NewTaskConfigForDowngrade create new TaskConfigForDowngrade.
 func NewTaskConfigForDowngrade(taskConfig *TaskConfig) *TaskConfigForDowngrade {
+	targetDB := *taskConfig.TargetDB
 	return &TaskConfigForDowngrade{
-		Name:                    taskConfig.Name,
-		TaskMode:                taskConfig.TaskMode,
-		IsSharding:              taskConfig.IsSharding,
-		ShardMode:               taskConfig.ShardMode,
-		IgnoreCheckingItems:     taskConfig.IgnoreCheckingItems,
-		MetaSchema:              taskConfig.MetaSchema,
-		EnableHeartbeat:         taskConfig.EnableHeartbeat,
-		HeartbeatUpdateInterval: taskConfig.HeartbeatUpdateInterval,
-		HeartbeatReportInterval: taskConfig.HeartbeatReportInterval,
-		Timezone:                taskConfig.Timezone,
-		CaseSensitive:           taskConfig.CaseSensitive,
-		TargetDB:                taskConfig.TargetDB,
-		OnlineDDLScheme:         taskConfig.OnlineDDLScheme,
-		Routes:                  taskConfig.Routes,
-		Filters:                 taskConfig.Filters,
-		ColumnMappings:          taskConfig.ColumnMappings,
-		BWList:                  taskConfig.BWList,
-		BAList:                  taskConfig.BAList,
-		Mydumpers:               taskConfig.Mydumpers,
-		Loaders:                 NewLoaderConfigForDowngrade(taskConfig.Loaders),
-		Syncers:                 NewSyncerConfigsForDowngrade(taskConfig.Syncers),
-		CleanDumpFile:           taskConfig.CleanDumpFile,
-		EnableANSIQuotes:        taskConfig.EnableANSIQuotes,
-		RemoveMeta:              taskConfig.RemoveMeta,
-		MySQLInstances:          NewMySQLInstancesForDowngrade(taskConfig.MySQLInstances),
-		ExprFilter:              taskConfig.ExprFilter,
-		OnlineDDL:               taskConfig.OnlineDDL,
-		ShadowTableRules:        taskConfig.ShadowTableRules,
-		TrashTableRules:         taskConfig.TrashTableRules,
+		Name:                      taskConfig.Name,
+		TaskMode:                  taskConfig.TaskMode,
+		IsSharding:                taskConfig.IsSharding,
+		ShardMode:                 taskConfig.ShardMode,
+		StrictOptimisticShardMode: taskConfig.StrictOptimisticShardMode,
+		IgnoreCheckingItems:       taskConfig.IgnoreCheckingItems,
+		MetaSchema:                taskConfig.MetaSchema,
+		EnableHeartbeat:           taskConfig.EnableHeartbeat,
+		HeartbeatUpdateInterval:   taskConfig.HeartbeatUpdateInterval,
+		HeartbeatReportInterval:   taskConfig.HeartbeatReportInterval,
+		Timezone:                  taskConfig.Timezone,
+		CaseSensitive:             taskConfig.CaseSensitive,
+		TargetDB:                  &targetDB,
+		OnlineDDLScheme:           taskConfig.OnlineDDLScheme,
+		Routes:                    taskConfig.Routes,
+		Filters:                   taskConfig.Filters,
+		ColumnMappings:            taskConfig.ColumnMappings,
+		BWList:                    taskConfig.BWList,
+		BAList:                    taskConfig.BAList,
+		Mydumpers:                 taskConfig.Mydumpers,
+		Loaders:                   NewLoaderConfigForDowngrade(taskConfig.Loaders),
+		Syncers:                   NewSyncerConfigsForDowngrade(taskConfig.Syncers),
+		CleanDumpFile:             taskConfig.CleanDumpFile,
+		EnableANSIQuotes:          taskConfig.EnableANSIQuotes,
+		RemoveMeta:                taskConfig.RemoveMeta,
+		MySQLInstances:            NewMySQLInstancesForDowngrade(taskConfig.MySQLInstances),
+		ExprFilter:                taskConfig.ExprFilter,
+		OnlineDDL:                 taskConfig.OnlineDDL,
+		ShadowTableRules:          taskConfig.ShadowTableRules,
+		TrashTableRules:           taskConfig.TrashTableRules,
 	}
 }
 

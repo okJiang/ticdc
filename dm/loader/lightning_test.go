@@ -17,11 +17,13 @@ import (
 	"testing"
 
 	"github.com/pingcap/errors"
-	"github.com/pingcap/tidb/br/pkg/lightning/common"
-	lcfg "github.com/pingcap/tidb/br/pkg/lightning/config"
 	"github.com/pingcap/tidb/br/pkg/storage"
+	"github.com/pingcap/tidb/pkg/lightning/common"
+	lcfg "github.com/pingcap/tidb/pkg/lightning/config"
 	"github.com/pingcap/tiflow/dm/config"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,4 +62,43 @@ func TestGetLightiningConfig(t *testing.T) {
 	require.Equal(t, lcfg.CheckpointDriverMySQL, conf.Checkpoint.Driver)
 	require.Equal(t, lcfg.CheckpointRemove, conf.Checkpoint.KeepAfterSuccess)
 	require.Contains(t, conf.Checkpoint.Schema, "job123")
+	require.Equal(t, 32, conf.TikvImporter.RangeConcurrency)
+	require.Equal(t, lcfg.CompressionGzip, conf.TikvImporter.CompressKVPairs)
+	require.Equal(t, lcfg.OpLevelRequired, conf.PostRestore.Analyze)
+	lightningDefaultQuota := lcfg.NewConfig().TikvImporter.DiskQuota
+	// when we don't set dm loader disk quota, it should be equal to lightning's default quota
+	require.Equal(t, lightningDefaultQuota, conf.TikvImporter.DiskQuota)
+
+	conf, err = GetLightningConfig(&lcfg.GlobalConfig{},
+		&config.SubTaskConfig{
+			Name: "job123",
+		})
+	require.NoError(t, err)
+	require.Equal(t, lcfg.CheckpointDriverFile, conf.Checkpoint.Driver)
+
+	conf, err = GetLightningConfig(&lcfg.GlobalConfig{},
+		&config.SubTaskConfig{
+			Name: "job123",
+		})
+	require.NoError(t, err)
+	require.Equal(t, lcfg.CheckpointDriverMySQL, conf.Checkpoint.Driver)
+}
+
+func TestMetricProxies(t *testing.T) {
+	l := &LightningLoader{cfg: &config.SubTaskConfig{}}
+	l.initMetricProxies()
+	require.Equal(t, defaultMetricProxies, l.metricProxies)
+
+	registry := prometheus.NewRegistry()
+	l = &LightningLoader{cfg: &config.SubTaskConfig{MetricsFactory: promauto.With(registry)}}
+	l.initMetricProxies()
+	require.NotEqual(t, defaultMetricProxies, l.metricProxies)
+	l.metricProxies.loaderExitWithErrorCounter.WithLabelValues("test", "source", "false").Inc()
+	metricFamilies, err := registry.Gather()
+	require.NoError(t, err)
+	require.Len(t, metricFamilies, 1)
+	l.removeLabelValuesWithTaskInMetrics("test", "source")
+	metricFamilies, err = registry.Gather()
+	require.NoError(t, err)
+	require.Len(t, metricFamilies, 0)
 }

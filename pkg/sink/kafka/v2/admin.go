@@ -66,20 +66,13 @@ func (a *admin) GetAllBrokers(ctx context.Context) ([]pkafka.Broker, error) {
 	return result, nil
 }
 
-func (a *admin) GetCoordinator(ctx context.Context) (int, error) {
+func (a *admin) GetBrokerConfig(ctx context.Context, configName string) (string, error) {
 	response, err := a.clusterMetadata(ctx)
 	if err != nil {
-		return 0, errors.Trace(err)
+		return "", errors.Trace(err)
 	}
 
-	return response.Controller.ID, nil
-}
-
-func (a *admin) GetBrokerConfig(ctx context.Context, configName string) (string, error) {
-	controllerID, err := a.GetCoordinator(ctx)
-	if err != nil {
-		return "", err
-	}
+	controllerID := response.Controller.ID
 	request := &kafka.DescribeConfigsRequest{
 		Resources: []kafka.DescribeConfigRequestResource{
 			{
@@ -98,7 +91,7 @@ func (a *admin) GetBrokerConfig(ctx context.Context, configName string) (string,
 	if len(resp.Resources) == 0 || len(resp.Resources[0].ConfigEntries) == 0 {
 		log.Warn("Kafka config item not found",
 			zap.String("configName", configName))
-		return "", errors.ErrKafkaBrokerConfigNotFound.GenWithStack(
+		return "", errors.ErrKafkaConfigNotFound.GenWithStack(
 			"cannot find the `%s` from the broker's configuration", configName)
 	}
 
@@ -113,65 +106,51 @@ func (a *admin) GetBrokerConfig(ctx context.Context, configName string) (string,
 
 	log.Warn("Kafka config item not found",
 		zap.String("configName", configName))
-	return "", errors.ErrKafkaBrokerConfigNotFound.GenWithStack(
+	return "", errors.ErrKafkaConfigNotFound.GenWithStack(
 		"cannot find the `%s` from the broker's configuration", configName)
 }
 
-func (a *admin) GetTopicsPartitions(ctx context.Context) (map[string]int32, error) {
-	response, err := a.clusterMetadata(ctx)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	result := make(map[string]int32, len(response.Topics))
-	for _, topic := range response.Topics {
-		result[topic.Name] = int32(len(topic.Partitions))
-	}
-	return result, nil
-}
-
-func (a *admin) GetAllTopicsMeta(ctx context.Context) (map[string]pkafka.TopicDetail, error) {
-	response, err := a.clusterMetadata(ctx)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-
-	describeTopicConfigsRequest := &kafka.DescribeConfigsRequest{
-		Resources: []kafka.DescribeConfigRequestResource{},
-	}
-	result := make(map[string]pkafka.TopicDetail, len(response.Topics))
-	for _, topic := range response.Topics {
-		result[topic.Name] = pkafka.TopicDetail{
-			Name:              topic.Name,
-			NumPartitions:     int32(len(topic.Partitions)),
-			ReplicationFactor: int16(len(topic.Partitions[0].Replicas)),
-		}
-		describeTopicConfigsRequest.Resources = append(describeTopicConfigsRequest.Resources,
-			kafka.DescribeConfigRequestResource{
+func (a *admin) GetTopicConfig(ctx context.Context, topicName string, configName string) (string, error) {
+	request := &kafka.DescribeConfigsRequest{
+		Resources: []kafka.DescribeConfigRequestResource{
+			{
 				ResourceType: kafka.ResourceTypeTopic,
-				ResourceName: topic.Name,
-			})
+				ResourceName: topicName,
+				ConfigNames:  []string{configName},
+			},
+		},
 	}
 
-	describeTopicConfigsResponse, err := a.client.DescribeConfigs(ctx, describeTopicConfigsRequest)
+	resp, err := a.client.DescribeConfigs(ctx, request)
 	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	for _, resource := range describeTopicConfigsResponse.Resources {
-		topicDetails, ok := result[resource.ResourceName]
-		if !ok {
-			return nil, errors.New("undesired topic found from the response")
-		}
-		topicDetails.ConfigEntries = make(map[string]string, len(resource.ConfigEntries))
-		for _, entry := range resource.ConfigEntries {
-			if entry.IsDefault || entry.IsSensitive {
-				continue
-			}
-			topicDetails.ConfigEntries[entry.ConfigName] = entry.ConfigValue
-		}
-		result[resource.ResourceName] = topicDetails
+		return "", errors.Trace(err)
 	}
 
-	return result, nil
+	if len(resp.Resources) == 0 || len(resp.Resources[0].ConfigEntries) == 0 {
+		log.Warn("Kafka config item not found",
+			zap.String("configName", configName))
+		return "", errors.ErrKafkaConfigNotFound.GenWithStack(
+			"cannot find the `%s` from the topic's configuration", configName)
+	}
+
+	// For compatibility with KOP, we checked all return values.
+	// 1. Kafka only returns requested configs.
+	// 2. Kop returns all configs.
+	for _, entry := range resp.Resources[0].ConfigEntries {
+		if entry.ConfigName == configName {
+			log.Info("Kafka config item found",
+				zap.String("namespace", a.changefeedID.Namespace),
+				zap.String("changefeed", a.changefeedID.ID),
+				zap.String("configName", configName),
+				zap.String("configValue", entry.ConfigValue))
+			return entry.ConfigValue, nil
+		}
+	}
+
+	log.Warn("Kafka config item not found",
+		zap.String("configName", configName))
+	return "", errors.ErrKafkaConfigNotFound.GenWithStack(
+		"cannot find the `%s` from the topic's configuration", configName)
 }
 
 func (a *admin) GetTopicsMeta(
@@ -194,11 +173,29 @@ func (a *admin) GetTopicsMeta(
 			}
 			log.Warn("fetch topic meta failed",
 				zap.String("topic", topic.Name), zap.Error(topic.Error))
+			continue
 		}
 		result[topic.Name] = pkafka.TopicDetail{
 			Name:          topic.Name,
 			NumPartitions: int32(len(topic.Partitions)),
 		}
+	}
+	return result, nil
+}
+
+func (a *admin) GetTopicsPartitionsNum(
+	ctx context.Context, topics []string,
+) (map[string]int32, error) {
+	resp, err := a.client.Metadata(ctx, &kafka.MetadataRequest{
+		Topics: topics,
+	})
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	result := make(map[string]int32, len(topics))
+	for _, topic := range resp.Topics {
+		result[topic.Name] = int32(len(topic.Partitions))
 	}
 	return result, nil
 }

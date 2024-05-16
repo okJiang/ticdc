@@ -62,6 +62,35 @@ func TestNewReplicationSet(t *testing.T) {
 			set: &ReplicationSet{
 				State:    ReplicationSetStateAbsent,
 				Captures: map[string]Role{},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+					},
+				},
 			},
 			tableStatus: map[model.CaptureID]*tablepb.TableStatus{},
 		},
@@ -72,6 +101,35 @@ func TestNewReplicationSet(t *testing.T) {
 				Captures: map[string]Role{"1": RolePrimary},
 				Checkpoint: tablepb.Checkpoint{
 					CheckpointTs: 2, ResolvedTs: 2,
+				},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 2,
+							ResolvedTs:   2,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 2,
+							ResolvedTs:   2,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 2,
+							ResolvedTs:   2,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 2,
+							ResolvedTs:   2,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 2,
+							ResolvedTs:   2,
+							LastSyncedTs: 0,
+						},
+					},
 				},
 			},
 			checkpoint: 2,
@@ -89,6 +147,35 @@ func TestNewReplicationSet(t *testing.T) {
 			set: &ReplicationSet{
 				State:    ReplicationSetStatePrepare,
 				Captures: map[string]Role{"1": RoleSecondary},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+					},
+				},
 			},
 			tableStatus: map[model.CaptureID]*tablepb.TableStatus{
 				"1": {
@@ -105,16 +192,54 @@ func TestNewReplicationSet(t *testing.T) {
 				Captures: map[string]Role{
 					"1": RoleSecondary, "2": RolePrimary,
 				},
-				Checkpoint: tablepb.Checkpoint{CheckpointTs: 2},
+				Checkpoint: tablepb.Checkpoint{
+					CheckpointTs: 2,
+					ResolvedTs:   2,
+				},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+					},
+				},
 			},
 			tableStatus: map[model.CaptureID]*tablepb.TableStatus{
 				"1": {
-					State:      tablepb.TableStatePreparing,
-					Checkpoint: tablepb.Checkpoint{CheckpointTs: 1},
+					State: tablepb.TableStatePreparing,
+					Checkpoint: tablepb.Checkpoint{
+						CheckpointTs: 1,
+						ResolvedTs:   1,
+					},
 				},
 				"2": {
-					State:      tablepb.TableStateReplicating,
-					Checkpoint: tablepb.Checkpoint{CheckpointTs: 2},
+					State: tablepb.TableStateReplicating,
+					Checkpoint: tablepb.Checkpoint{
+						CheckpointTs: 2,
+						ResolvedTs:   2,
+					},
 				},
 			},
 		},
@@ -125,6 +250,35 @@ func TestNewReplicationSet(t *testing.T) {
 				Primary: "2",
 				Captures: map[string]Role{
 					"1": RoleSecondary, "2": RolePrimary,
+				},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+					},
 				},
 			},
 			tableStatus: map[model.CaptureID]*tablepb.TableStatus{
@@ -145,6 +299,35 @@ func TestNewReplicationSet(t *testing.T) {
 				Captures: map[string]Role{
 					"1": RoleSecondary, "2": RoleUndetermined,
 				},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+					},
+				},
 			},
 			tableStatus: map[model.CaptureID]*tablepb.TableStatus{
 				"1": {
@@ -162,6 +345,35 @@ func TestNewReplicationSet(t *testing.T) {
 			set: &ReplicationSet{
 				State:    ReplicationSetStateCommit,
 				Captures: map[string]Role{"1": RoleSecondary},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+					},
+				},
 			},
 			tableStatus: map[model.CaptureID]*tablepb.TableStatus{
 				"1": {
@@ -180,6 +392,35 @@ func TestNewReplicationSet(t *testing.T) {
 				State: ReplicationSetStateRemoving,
 				Captures: map[string]Role{
 					"1": RoleUndetermined, "2": RoleUndetermined,
+				},
+				Stats: tablepb.Stats{
+					StageCheckpoints: map[string]tablepb.Checkpoint{
+						"puller-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"puller-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sink": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-ingress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+						"sorter-egress": {
+							CheckpointTs: 0,
+							ResolvedTs:   0,
+							LastSyncedTs: 0,
+						},
+					},
 				},
 			},
 			tableStatus: map[model.CaptureID]*tablepb.TableStatus{
@@ -1445,4 +1686,30 @@ func TestReplicationSetHeap_MinK(t *testing.T) {
 	}
 	require.Equal(t, expectedTables, tables)
 	require.Equal(t, 0, h.Len())
+}
+
+func TestUpdateCheckpointAndStats(t *testing.T) {
+	cases := []struct {
+		checkpoint tablepb.Checkpoint
+		stats      tablepb.Stats
+	}{
+		{
+			checkpoint: tablepb.Checkpoint{
+				CheckpointTs: 1,
+				ResolvedTs:   2,
+			},
+			stats: tablepb.Stats{},
+		},
+		{
+			checkpoint: tablepb.Checkpoint{
+				CheckpointTs: 2,
+				ResolvedTs:   1,
+			},
+			stats: tablepb.Stats{},
+		},
+	}
+	r := &ReplicationSet{}
+	for _, c := range cases {
+		r.updateCheckpointAndStats(c.checkpoint, c.stats)
+	}
 }

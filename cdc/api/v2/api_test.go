@@ -49,7 +49,7 @@ func (c *mockPDClient) UpdateServiceGCSafePoint(ctx context.Context,
 
 // GetTS of mockPDClient returns a mock tso
 func (c *mockPDClient) GetTS(ctx context.Context) (int64, int64, error) {
-	return c.logicTime, c.timestamp, nil
+	return c.timestamp, c.logicTime, nil
 }
 
 // GetClusterID of mockPDClient returns a mock ClusterID
@@ -62,19 +62,20 @@ func (c *mockPDClient) Close() {}
 
 type mockStatusProvider struct {
 	owner.StatusProvider
-	changefeedStatus   *model.ChangeFeedStatus
-	changefeedInfo     *model.ChangeFeedInfo
-	processors         []*model.ProcInfoSnap
-	taskStatus         map[model.CaptureID]*model.TaskStatus
-	changefeedInfos    map[model.ChangeFeedID]*model.ChangeFeedInfo
-	changefeedStatuses map[model.ChangeFeedID]*model.ChangeFeedStatus
-	err                error
+	changefeedStatus       *model.ChangeFeedStatusForAPI
+	changefeedInfo         *model.ChangeFeedInfo
+	processors             []*model.ProcInfoSnap
+	taskStatus             map[model.CaptureID]*model.TaskStatus
+	changefeedInfos        map[model.ChangeFeedID]*model.ChangeFeedInfo
+	changefeedStatuses     map[model.ChangeFeedID]*model.ChangeFeedStatusForAPI
+	changeFeedSyncedStatus *model.ChangeFeedSyncedStatusForAPI
+	err                    error
 }
 
 // GetChangeFeedStatus returns a changefeeds' runtime status.
 func (m *mockStatusProvider) GetChangeFeedStatus(ctx context.Context,
 	changefeedID model.ChangeFeedID,
-) (*model.ChangeFeedStatus, error) {
+) (*model.ChangeFeedStatusForAPI, error) {
 	return m.changefeedStatus, m.err
 }
 
@@ -114,8 +115,20 @@ func (m *mockStatusProvider) GetAllChangeFeedInfo(_ context.Context) (
 
 // GetAllChangeFeedStatuses returns a list of mock changefeed status.
 func (m *mockStatusProvider) GetAllChangeFeedStatuses(_ context.Context) (
-	map[model.ChangeFeedID]*model.ChangeFeedStatus,
+	map[model.ChangeFeedID]*model.ChangeFeedStatusForAPI,
 	error,
 ) {
 	return m.changefeedStatuses, m.err
+}
+
+// GetChangeFeedSyncedStatus returns a mock changefeed status.
+func (m *mockStatusProvider) GetChangeFeedSyncedStatus(_ context.Context, changefeedID model.ChangeFeedID) (
+	*model.ChangeFeedSyncedStatusForAPI,
+	error,
+) {
+	return m.changeFeedSyncedStatus, m.err
+}
+
+func (m *mockStatusProvider) IsChangefeedOwner(_ context.Context, id model.ChangeFeedID) (bool, error) {
+	return true, nil
 }
